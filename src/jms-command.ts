@@ -1,19 +1,19 @@
 /**
- * /jms -- run commands on JumpServer profiles straight from the prompt.
+ * /jms -- work on a JumpServer host, with the AI or by hand.
  *
- *   /jms                          list JumpServer profiles and session state
- *   /jms use <profile>            remember a default profile for this session
- *   /jms <profile>                enter the server: an interactive terminal (vim, top, ...)
- *   /jms connect <profile>        log in in the background, running nothing
- *   /jms <profile> <command>      run a command on that profile
- *   /jms <command>                run it on the default profile
- *   /jms share                    send the last result to the model
- *   /jms close [profile]          close the open session(s)
+ *   /jms                          list JumpServer profiles and their state
+ *   /jms <profile>                enter the server: from now on the AI operates it
+ *                                 for you (plain sentences, via ssh_exec)
+ *   /jms exit                     leave that mode
+ *   /jms <profile> <command>      run one command yourself, output shown as-is
+ *   /jms <command>                same, on the current/default profile
+ *   /jms shell <profile>          a real interactive terminal for you (vim, top, ...)
+ *   /jms use <profile>            set the default profile for /jms <command>
+ *   /jms share                    send the last direct result to the model
+ *   /jms close [profile]          close the open background session(s)
  *
- * The command runs directly (no model round-trip) through the same guard as
- * the ssh_exec tool, so confirmation, policy and audit still apply. The result
- * is shown in the transcript but kept out of the model's context until you
- * run `/jms share`.
+ * Entering does not run anything. Every command the AI issues goes through the
+ * ssh_exec guard: read-only commands run, everything else asks you first.
  */
 
 import type { SshProfile } from "./types.ts";
@@ -24,12 +24,13 @@ export type JmsAction =
   | { kind: "use"; profile: string }
   | { kind: "close"; profile?: string }
   | { kind: "share" }
+  | { kind: "enter"; profile: string }
+  | { kind: "leave" }
   | { kind: "shell"; profile: string }
-  | { kind: "connect"; profile: string }
   | { kind: "run"; profile: string; command: string }
   | { kind: "error"; message: string };
 
-const USAGE = "Usage: /jms [list] | <profile> | connect <profile> | use <profile> | share | close [profile] | [<profile>] <command>";
+const USAGE = "Usage: /jms [list] | <profile> | exit | shell <profile> | use <profile> | share | close [profile] | [<profile>] <command>";
 
 /** Pure: turn the raw argument string into an action. */
 export function parseJmsArgs(
@@ -55,10 +56,11 @@ export function parseJmsArgs(
       ? { kind: "use", profile: rest }
       : { kind: "error", message: `"${rest}" is not a JumpServer profile.${available}` };
   }
-  if (head === "connect") {
+  if (head === "exit" && !rest) return { kind: "leave" };
+  if (head === "shell") {
     if (!rest) return { kind: "error", message: `${USAGE}${available}` };
     return known(rest)
-      ? { kind: "connect", profile: rest }
+      ? { kind: "shell", profile: rest }
       : { kind: "error", message: `"${rest}" is not a JumpServer profile.${available}` };
   }
   if (head === "close") {
@@ -73,7 +75,7 @@ export function parseJmsArgs(
   }
 
   if (known(head)) {
-    if (restWords.length === 0) return { kind: "shell", profile: head };
+    if (restWords.length === 0) return { kind: "enter", profile: head };
     return { kind: "run", profile: head, command: rest };
   }
 
@@ -98,6 +100,8 @@ export interface JmsDeps {
   closeAll(): void;
   /** Log in and keep the session open without running anything. */
   connect(profile: string): Promise<{ reused: boolean }>;
+  /** Tell the AI which server it is working on (null = none). */
+  setTarget(profile: string | null): void;
   /** Give the human an interactive terminal on the profile; resolves when they leave. */
   shell(profile: string): Promise<{ reason: string }>;
   /** Run through the guarded exec path; rejects when denied or failed. */
@@ -123,7 +127,12 @@ function humanError(err: unknown): string {
 
 export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void> {
   let defaultName: string | null = null;
+  let target: string | null = null;
   let last: JmsResultData | null = null;
+  const changeTarget = (p: string | null) => {
+    target = p;
+    deps.setTarget(p);
+  };
   let running = false;
 
   return async (args: string) => {
@@ -169,7 +178,7 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void>
         return;
       }
 
-      case "connect": {
+      case "enter": {
         if (running) {
           deps.notify("A /jms command is still running.", "error");
           return;
@@ -177,22 +186,36 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void>
         running = true;
         deps.notify(`Connecting to ${action.profile}...`, "info");
         try {
-          const { reused } = await deps.connect(action.profile);
-          // WHY: entering is an explicit choice of machine, like `/jms use`, so
-          // it is the one other thing that may set the default profile.
+          await deps.connect(action.profile);
+          // WHY: entering is an explicit choice of machine, so it also becomes
+          // the default for direct /jms <command> calls.
           defaultName = action.profile;
+          changeTarget(action.profile);
           const p = profiles[action.profile];
           const asset = (p.jump as { asset?: string }).asset ?? "(unset)";
           deps.notify(
-            `${reused ? "Already connected to" : "Connected to"} ${action.profile} (${p.user}@${p.host}:${p.port}, asset=${asset}). ` +
-              `No command was run. Use /jms <command> to run one, /jms close to leave.`,
+            `Entered ${action.profile} (${p.user}@${p.host}:${p.port}, asset=${asset}). ` +
+              `Nothing was run. Tell the AI what to do on this server; changes ask you first. /jms exit leaves.`,
             "info",
           );
         } catch (err) {
-          deps.notify(`Could not connect to ${action.profile}: ${humanError(err)}`, "error");
+          deps.notify(`Could not enter ${action.profile}: ${humanError(err)}`, "error");
         } finally {
           running = false;
         }
+        return;
+      }
+
+      case "leave": {
+        const was = target;
+        if (!was) {
+          deps.notify("Not in a server. /jms <profile> enters one.", "info");
+          return;
+        }
+        changeTarget(null);
+        deps.closeSession(was);
+        if (defaultName === was) defaultName = null;
+        deps.notify(`Left ${was}; its session is closed.`, "info");
         return;
       }
 
@@ -202,16 +225,16 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void>
           return;
         }
         running = true;
-        deps.notify(`Entering ${action.profile}... (Ctrl-] leaves, exit ends the shell)`, "info");
+        deps.notify(`Opening a terminal on ${action.profile}... (Ctrl-] leaves, exit ends the shell)`, "info");
         try {
           const { reason } = await deps.shell(action.profile);
           defaultName = action.profile; // an explicit choice of machine, like /jms use
           deps.notify(
-            `Left ${action.profile} (${reason}). /jms <command> runs commands there; /jms ${action.profile} enters again.`,
+            `Left ${action.profile} (${reason}). /jms <command> runs commands there; /jms shell ${action.profile} opens it again.`,
             "info",
           );
         } catch (err) {
-          deps.notify(`Could not enter ${action.profile}: ${humanError(err)}`, "error");
+          deps.notify(`Could not open a terminal on ${action.profile}: ${humanError(err)}`, "error");
         } finally {
           running = false;
         }

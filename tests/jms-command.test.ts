@@ -14,9 +14,10 @@ describe("parseJmsArgs", () => {
     ["close", null, { kind: "close" }],
     ["share", null, { kind: "share" }],
     ["close s-fin-test", null, { kind: "close", profile: "s-fin-test" }],
-    ["s-fin-test", null, { kind: "shell", profile: "s-fin-test" }],
-    ["  s  ", null, { kind: "shell", profile: "s" }],
-    ["connect s-fin-test", null, { kind: "connect", profile: "s-fin-test" }],
+    ["s-fin-test", null, { kind: "enter", profile: "s-fin-test" }],
+    ["  s  ", null, { kind: "enter", profile: "s" }],
+    ["shell s-fin-test", null, { kind: "shell", profile: "s-fin-test" }],
+    ["exit", null, { kind: "leave" }],
     ["s-fin-test hostname", null, { kind: "run", profile: "s-fin-test", command: "hostname" }],
     ["s-fin-test  ls -la /etc | head", null, { kind: "run", profile: "s-fin-test", command: "ls -la /etc | head" }],
     ["hostname", "s", { kind: "run", profile: "s", command: "hostname" }],
@@ -34,8 +35,8 @@ describe("parseJmsArgs", () => {
   it("rejects unknown profiles for use/close and missing commands", () => {
     assert.equal(parseJmsArgs("use nope", NAMES, null).kind, "error");
     assert.equal(parseJmsArgs("use", NAMES, null).kind, "error");
-    assert.equal(parseJmsArgs("connect", NAMES, null).kind, "error");
-    assert.equal(parseJmsArgs("connect nope", NAMES, null).kind, "error");
+    assert.equal(parseJmsArgs("shell", NAMES, null).kind, "error");
+    assert.equal(parseJmsArgs("shell nope", NAMES, null).kind, "error");
     assert.equal(parseJmsArgs("close nope", NAMES, null).kind, "error");
   });
 
@@ -56,6 +57,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
   const open = new Set<string>(["s"]);
   const connected: string[] = [];
   const shells: string[] = [];
+  const targets: (string | null)[] = [];
   let shellError: Error | null = null;
   let connectError: Error | null = null;
   const handler = createJmsHandler({
@@ -63,6 +65,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
     hasSession: (n) => open.has(n),
     closeSession: (n) => open.delete(n),
     closeAll: () => open.clear(),
+    setTarget: (p) => targets.push(p),
     shell: async (p) => {
       if (shellError) throw shellError;
       shells.push(p);
@@ -81,7 +84,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
     share: (t) => shared.push(t),
     notify: (m) => notes.push(m),
   });
-  return { handler, shown, shared, notes, ran, open, connected, shells, failShell: (e: Error) => (shellError = e), failConnect: (e: Error) => (connectError = e) };
+  return { handler, shown, shared, notes, ran, open, connected, shells, targets, failShell: (e: Error) => (shellError = e), failConnect: (e: Error) => (connectError = e) };
 }
 
 const jms = (asset?: string): SshProfile => ({
@@ -156,61 +159,80 @@ describe("/jms handler", () => {
     assert.match(notes[0], /not a JumpServer profile/);
   });
 
-  it("a bare profile name enters an interactive terminal and becomes the default", async () => {
-    const { handler, shells, connected, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
+  it("a bare profile name enters the server: logs in, runs nothing, targets the AI, becomes the default", async () => {
+    const { handler, connected, shells, targets, ran, shown, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
     await handler("s-fin-test");
-    assert.deepEqual(shells, ["s-fin-test"]);
-    assert.equal(connected.length, 0);
+    assert.deepEqual(connected, ["s-fin-test"]);
+    assert.deepEqual(targets, ["s-fin-test"]);
+    assert.equal(shells.length, 0, "no terminal is opened");
     assert.equal(ran.length, 0);
-    assert.match(notes.at(-1)!, /Left s-fin-test \(remote-exit\)/);
-    await handler("uptime");
+    assert.equal(shown.length, 0);
+    assert.match(notes.at(-1)!, /Entered s-fin-test .*asset=1\.2\.3\.4\)\. Nothing was run\. Tell the AI/);
+    await handler("uptime"); // a direct command still works and uses the default
     assert.deepEqual(ran, ["s-fin-test:uptime"]);
+  });
+
+  it("a failed login neither targets the AI nor becomes the default", async () => {
+    const { handler, failConnect, targets, ran, notes } = setup({ s: jms("a"), t: jms("b") });
+    failConnect(new Error("JumpServer login timed out at step 2/4"));
+    await handler("t");
+    assert.match(notes.at(-1)!, /Could not enter t: JumpServer login timed out/);
+    assert.deepEqual(targets, []);
+    await handler("hostname");
+    assert.equal(ran.length, 0);
+    assert.match(notes.at(-1)!, /No default profile/);
+  });
+
+  it("exit leaves the server: clears the target, closes its session, drops the default", async () => {
+    const { handler, targets, open, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
+    open.add("s-fin-test");
+    await handler("s-fin-test");
+    await handler("exit");
+    assert.deepEqual(targets, ["s-fin-test", null]);
+    assert.equal(open.has("s-fin-test"), false);
+    assert.match(notes.at(-1)!, /Left s-fin-test/);
+    await handler("uptime");
+    assert.equal(ran.length, 0, "default is gone after exit");
+  });
+
+  it("exit outside a server says so", async () => {
+    const { handler, targets, notes } = setup({ s: jms("a") });
+    await handler("exit");
+    assert.deepEqual(targets, []);
+    assert.match(notes[0], /Not in a server/);
+  });
+
+  it("entering another server switches the target", async () => {
+    const { handler, targets } = setup({ a: jms("1"), b: jms("2") });
+    await handler("a");
+    await handler("b");
+    assert.deepEqual(targets, ["a", "b"]);
+  });
+
+  it("shell opens a terminal for the human, not the AI", async () => {
+    const { handler, shells, targets, connected, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
+    await handler("shell s-fin-test");
+    assert.deepEqual(shells, ["s-fin-test"]);
+    assert.deepEqual(targets, []);
+    assert.equal(connected.length + ran.length, 0);
+    assert.match(notes.at(-1)!, /Left s-fin-test \(remote-exit\)/);
   });
 
   it("a shell that could not start is reported and does not become the default", async () => {
     const { handler, failShell, ran, notes } = setup({ s: jms("a"), t: jms("b") });
     failShell(new Error("needs the pi terminal UI"));
-    await handler("t");
-    assert.match(notes.at(-1)!, /Could not enter t: needs the pi terminal UI/);
+    await handler("shell t");
+    assert.match(notes.at(-1)!, /Could not open a terminal on t: needs the pi terminal UI/);
     await handler("hostname");
     assert.equal(ran.length, 0);
     assert.match(notes.at(-1)!, /No default profile/);
   });
 
-  it("connect logs in in the background, runs nothing, and becomes the default", async () => {
-    const { handler, connected, shells, ran, shown, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
-    await handler("connect s-fin-test");
-    assert.deepEqual(connected, ["s-fin-test"]);
-    assert.equal(shells.length, 0);
-    assert.equal(ran.length, 0);
-    assert.equal(shown.length, 0);
-    assert.match(notes.at(-1)!, /Connected to s-fin-test .*asset=1\.2\.3\.4\)\. No command was run/);
-    await handler("uptime");
-    assert.deepEqual(ran, ["s-fin-test:uptime"]);
-  });
-
-  it("connecting twice reports the session as reused", async () => {
-    const { handler, notes } = setup({ s: jms("a") });
-    await handler("connect s");
-    await handler("connect s");
-    assert.match(notes.at(-1)!, /Already connected to s/);
-  });
-
-  it("a failed connect is reported and does not become the default", async () => {
-    const { handler, failConnect, ran, notes } = setup({ s: jms("a"), t: jms("b") });
-    failConnect(new Error("JumpServer login timed out at step 2/4"));
-    await handler("connect t");
-    assert.match(notes.at(-1)!, /Could not connect to t: JumpServer login timed out/);
-    await handler("hostname");
-    assert.equal(ran.length, 0);
-    assert.match(notes.at(-1)!, /No default profile/);
-  });
-
-  it("entering or connecting a non-JumpServer profile is refused", async () => {
-    const { handler, connected, shells, notes } = setup({ direct, s: jms("a") });
+  it("entering or opening a shell on a non-JumpServer profile is refused", async () => {
+    const { handler, connected, shells, targets, notes } = setup({ direct, s: jms("a") });
     await handler("direct");
-    await handler("connect direct");
-    assert.equal(connected.length + shells.length, 0);
+    await handler("shell direct");
+    assert.equal(connected.length + shells.length + targets.length, 0);
     assert.match(notes[0], /not a JumpServer profile/);
     assert.match(notes[1], /not a JumpServer profile/);
   });

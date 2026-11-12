@@ -300,120 +300,27 @@ Use a hostname/IP search string as `asset` (menu row numbers are per page and ch
 | `/ssh <command>` | Run a command on the active host. |
 | `/ssh-key` | Set up passwordless login for the active host. |
 | `/jms` | List JumpServer profiles, their asset and whether a session is open. |
-| `/jms <profile>` | **Enter the server**: pi's UI steps aside and you get a real interactive terminal on the profile (`vim`, `top`, `less`, tab completion, Ctrl-C all work). `exit` ends the shell; **Ctrl-]** leaves immediately. pi comes back where you left it. Needs the pi terminal UI. |
-| `/jms connect <profile>` | Log in in the background and run nothing; later `/jms <command>` calls reuse that session. |
-| `/jms <profile> <command>` | Run a command on a JumpServer profile and show the raw output in the transcript. |
-| `/jms use <profile>` | Set the default profile, so `/jms <command>` works without a name. Only `use`, entering and `connect` set a default; running a command never does, so a mistyped name cannot reach the wrong server. |
-| `/jms share` | Send the last result to the model (it is otherwise kept out of the context). |
-| `/jms close [profile]` | Close one or all open JumpServer sessions. |
+| `/jms <profile>` | **Enter the server**: logs in, runs nothing, and from then on the AI works on that host for you. Just write what you want ("how full is the disk?", "show the last errors in the nginx log"); the AI runs it with `ssh_exec` on that profile. `/jms exit` leaves. |
+| `/jms exit` | Leave the server and close its session. |
+| `/jms <profile> <command>` | Run one command yourself and show the raw output in the transcript (no model involved). |
+| `/jms shell <profile>` | A real interactive terminal for **you** (`vim`, `top`, Ctrl-C ...). `exit` ends it, **Ctrl-]** leaves at once. See below. |
+| `/jms use <profile>` | Set the default profile for `/jms <command>`. Entering a server sets it too; running a command never does, so a mistyped name cannot reach the wrong server. |
+| `/jms share` | Send the last direct `/jms` result to the model (it is otherwise kept out of its context). |
+| `/jms close [profile]` | Close one or all background sessions. |
 
-Unlike `/ssh`, `/jms` runs the command itself instead of asking the model to: no model round-trip, no summarising, no context-compression of the output. It goes through the same guard as `ssh_exec` (read-only commands run, everything else asks you first, hard-denied commands are refused) and is written to the audit log. The result shows 40 lines and folds the rest behind the usual expand key; lines are wrapped to the terminal width, CJK included.
+### Server mode (`/jms <profile>`)
 
-## Skills
+While you are inside a server:
 
-| Skill | Purpose |
-|-------|---------|
-| `ssh-remote-work` | Choosing the right host, the absence of a shell and a TTY, reading before writing, and what each connection error actually means. |
-| `ssh-key-setup` | The password-to-key switch, why an existing key is never overwritten, and why the password stays until the key is proven. |
+- Every turn the AI is told which host it is on and how to work there: use `ssh_exec` with that profile, no SFTP/tunnels, no TTY (`top -bn1`, not `top`), the shell is persistent and shared, local `bash`/`read`/`write` act on **your** machine, not the server. This is added to the system prompt per turn and disappears when you leave; it is not stored in the conversation.
+- An `ssh_exec` call that forgets the profile is pointed at the entered server instead of falling back to the global active profile, which may be a different machine. An explicit profile is respected.
+- The footer shows `jms:<profile>`. The mode survives `/reload`.
+- Safety is unchanged: read-only commands run, everything else asks you first, hard-denied commands are refused, and every call is audited. Entering shows no prompt (it changes nothing); a new host key still needs your approval.
 
-## Safety / confirmation
+The AI can read anything the login account can read, so a root profile exposes secrets in files like `.netrc` or `.bash_history`. The prompt tells it not to open credential files unless you ask; that is guidance, not enforcement. For production hosts set the profile's `policy.mode` to `confirm-all`.
 
-Anything that changes server state, credentials or trust needs explicit human approval, asked **inside each tool** (not via a hook). With no interactive UI the answer is always *deny*.
+### Interactive terminal (`/jms shell <profile>`)
 
-| Tool | Behaviour |
-| --- | --- |
-| `ssh_exec` | Classified (below). Read-only runs without a prompt; otherwise *Allow once* / *Allow this exact command for this session* / *Deny*. Hard-denied commands (`rm -rf /`, `mkfs*`, `dd of=/dev/…`, fork bomb, redirect to `/dev/sd*`) are refused without a prompt. |
-| `ssh_upload` | Always confirms (shows local/remote path, size, whether the remote file exists). |
-| `ssh_download` | Confirms only when the local destination exists. |
-| `ssh_tunnel` `start` | Always confirms; warns loudly if `bind` is not loopback. `stop`/`list`/`define`/`forget` don't prompt. |
-| `ssh_setup`, `ssh_authorize`, `ssh_profile delete`, `ssh_keygen overwrite:true` | Confirm. |
-| `ssh_list`, `ssh_status`, `ssh_doctor` | No prompt. |
-| Unknown host key | Prompt to trust; changed/revoked keys stay hard failures. |
-
-A command is read-only only if it contains no redirection (except `2>&1`, `>/dev/null`), `$(`, backticks, `<(`, here-docs, `tee`, `xargs`, `sed -i`, `sudo`, `eval`, `sh -c`, newlines or parse problems, and every `; && || | &` segment starts with an allowlisted program (`ls cat head tail grep rg find df du ps uname uptime free ip ss hostname whoami id date wc stat file pwd echo env journalctl`, plus read-only subcommands of `systemctl docker kubectl lxc git`). Leading `VAR=x` assignments, absolute paths (`/bin/rm`) and `\rm` are not allowlisted. When unsure it asks.
-
-### Policy modes
-
-In `~/.pi/ssh-config.json`, top level (global) and/or per profile (profile overrides; `deny` lists are combined):
-
-```json
-{ "policy": { "mode": "confirm-writes", "extraReadOnly": ["^myctl status"], "deny": ["shutdown"] } }
-```
-
-- `confirm-writes` (default): read-only auto, the rest confirm.
-- `confirm-all`: everything confirms.
-- `readonly`: commands that would need confirmation are rejected without prompting.
-- `extraReadOnly` / `deny`: regex strings, matched per segment / on the whole command.
-
-### Audit log
-
-Every guarded call appends a JSON line to `~/.pi/ssh-audit.jsonl` (mode 0600; override with `PI_SSH_AUDIT_FILE`): `ts`, `id`, `profile`, `tool`, `target`, `decision` (`auto`, `human-allow`, `human-allow-session`, `human-deny`, `policy-deny`, `no-ui-deny`); `ssh_exec` adds a second line with the same `id` and `exitCode`. Passwords and passphrases are never written, and an audit failure never breaks a tool.
-
-## Host key verification
-
-Host keys are checked against `~/.ssh/known_hosts` — the same file OpenSSH uses, so hosts you have already visited with `ssh` are recognised, and hosts recorded here are recognised by `ssh`. Hashed entries (`ssh-keygen -H`) and `[host]:port` forms are both understood.
-
-- **Unknown host** → the human is prompted inside the tool (host:port, key type, fingerprint) with *Trust and record* / *Reject*. The `acceptNewHostKey` parameter is **deprecated and ignored**: a model cannot approve a key. With no UI the connection is refused.
-- **Changed key** → a hard failure with both fingerprints. This is what a machine-in-the-middle looks like; it is also what a reinstalled server looks like. It has to be resolved deliberately with `ssh-keygen -R <host>`.
-- **Revoked key** (`@revoked` in known_hosts) → always refused.
-
-`strictHostKey: false` in a profile turns the check off. It removes the only protection SSH has against an attacker on the network path, so it exists for throwaway lab machines and nothing else.
-
-## Configuration
-
-Profiles live in `~/.pi/ssh-config.json`, written atomically with mode `0600` because it can hold passwords and key passphrases.
-
-```json
-{
-  "profiles": {
-    "staging": {
-      "host": "staging.example.com",
-      "port": 22,
-      "user": "deploy",
-      "privateKeyPath": "/home/pat/.ssh/id_ed25519_pi_staging"
-    }
-  },
-  "activeProfile": "staging"
-}
-```
-
-Every tool also takes a one-off `profile` parameter, so several hosts can be used in one session without switching.
-
-### Editing the file by hand
-
-The file is safe to edit while pi is running, and safe to share with a second pi session:
-
-- **Writes merge.** Every write re-reads the file first and applies only its own change, so a host you added by hand — or one another session added — is not erased by an unrelated write from pi.
-- **Outside edits are picked up** without restarting pi; the next tool call sees them.
-- **Unknown keys survive.** A top-level key this version does not understand, or an extra field inside a profile such as a comment, is written back untouched.
-- **Nothing is rewritten needlessly.** A save that would not change the contents does not touch the file, so mtimes stay put and file watchers stay quiet.
-
-Writes are atomic: the new contents go to a private temporary file that is renamed into place, so an interrupted write cannot truncate the config.
-
-## Platform support
-
-Windows, macOS and Linux behave the same. Nothing in this package spawns a process — SSH comes from [ssh2](https://github.com/mscdex/ssh2) in pure JavaScript, keys are generated with Node's crypto, and there are no POSIX-only paths. A test asserts all three, so a change that introduces one fails the suite rather than only failing on someone else's machine.
-
-One difference is real and worth knowing: **file permissions are not enforced on Windows.** The config file and private keys are written with mode `0600`, but Windows governs access through ACLs and `chmod` only toggles the read-only bit. `ssh_doctor` reports this as a note on Windows rather than staying quiet about it. The practical answer is the same as everywhere: let the first connection replace the stored password with a key, so the file stops holding a secret at all.
-
-The end-to-end tests need an `sshd` to run against and skip themselves where there is none, which includes Windows.
-
-## Development
-
-```bash
-npm install
-npm test
-npm run test:coverage
-```
-
-The suite runs end-to-end against a real OpenSSH server: it starts `sshd` on a loopback port with a host key generated by this package, then exercises the handshake, host key verification (including a simulated key change), exit codes, SFTP, the full key bootstrap, and both tunnel directions with real traffic flowing through them. Those tests skip themselves on machines without `sshd` rather than failing.
-
-## License
-
-MIT
-
-### Interactive terminal (`/jms <profile>`)
-
-The terminal is opened with its own login to the bastion, separate from the background session used by `/jms <command>`; it is never registered for reuse and is closed when you leave. The model has no tool for this: only you can start it, and your keystrokes are the confirmation, so nothing is asked and the command policy does not apply (it cannot, there is no command to classify). pi's audit log records that a shell was opened and how it ended (`jms_shell`); what you type is recorded by JumpServer itself.
+The terminal is opened with its own login to the bastion, separate from the background session used by `/jms <command>`; it is never registered for reuse and is closed when you leave. The model has no tool for this and server mode does not use it: only you can start it, and your keystrokes are the confirmation, so nothing is asked and the command policy does not apply (it cannot, there is no command to classify). pi's audit log records that a shell was opened and how it ended (`jms_shell`); what you type is recorded by JumpServer itself.
 
 Handover works like pi's `interactive-shell` example: the TUI is stopped, stdin/stdout are wired to the remote channel, and the TUI is restarted afterwards. Terminal resizes are passed on. Anything a remote full-screen program leaves switched on (alternate screen, mouse reporting, hidden cursor) is reset when you return.

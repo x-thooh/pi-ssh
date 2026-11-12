@@ -30,7 +30,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { loadConfig, getConfig, getProfiles } from "./src/config.ts";
+import { loadConfig, getConfig, getProfile, getProfiles } from "./src/config.ts";
 import { SshSetupTool } from "./src/tools/ssh-setup.ts";
 import { SshStatusTool } from "./src/tools/ssh-status.ts";
 import { SshProfileTool } from "./src/tools/ssh-profile.ts";
@@ -46,10 +46,13 @@ import { listTunnels, onTunnelsChanged, stopAllTunnels } from "./src/tunnels.ts"
 import { closeAllJumpSessions, closeJumpSession, hasJumpSession } from "./src/jumpserver.ts";
 import { createJmsHandler } from "./src/jms-command.ts";
 import { renderJmsResult } from "./src/jms-render.ts";
+import { buildServerModePrompt } from "./src/jms-mode.ts";
 import { openGuardedSession, openGuardedShell, runGuardedExec } from "./src/tools/ssh-exec.ts";
 import { RESET_TERMINAL, pumpShell } from "./src/jms-shell.ts";
 
 const JMS_ENTRY = "jms-result";
+const JMS_MODE_ENTRY = "jms-mode";
+const JMS_STATUS = "jms";
 import { createTunnelIndicator } from "./src/ui.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -83,6 +86,7 @@ export default function (pi: ExtensionAPI) {
   pi.on("session_start", async (_event: unknown, ctx: unknown) => {
     showTunnels = createTunnelIndicator(ctx as never);
     showTunnels(listTunnels());
+    restoreServerMode(ctx as any);
   });
   onTunnelsChanged((tunnels) => showTunnels?.(tunnels));
 
@@ -109,6 +113,42 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
+  // "Inside a server": while set, every turn tells the AI which JumpServer host
+  // it is operating, and ssh_exec calls that forget the profile are pointed at it.
+  let aiTarget: string | null = null;
+  const showTarget = (ui: any) => ui?.setStatus?.(JMS_STATUS, aiTarget ? `jms:${aiTarget}` : undefined);
+
+  function restoreServerMode(ctx: any) {
+    // WHY: /reload rebuilds the extension, so the mode is read back from the
+    // last jms-mode entry of the session. A profile that no longer exists or is
+    // no longer a JumpServer host is dropped rather than trusted.
+    try {
+      let last: string | null = null;
+      for (const e of ctx?.sessionManager?.getEntries?.() ?? []) {
+        if (e?.type === "custom" && e.customType === JMS_MODE_ENTRY) last = e.data?.profile ?? null;
+      }
+      aiTarget = last && getProfile(last)?.jump?.type === "jumpserver" ? last : null;
+    } catch {
+      aiTarget = null;
+    }
+    showTarget(ctx?.ui);
+  }
+
+  pi.on("before_agent_start", async (event: any) => {
+    const profile = aiTarget ? getProfile(aiTarget) : null;
+    if (!aiTarget || !profile) return undefined;
+    return { systemPrompt: `${event.systemPrompt}\n\n${buildServerModePrompt(aiTarget, profile)}` };
+  });
+
+  pi.on("tool_call", async (event: any) => {
+    // WHY: a forgotten profile would otherwise fall back to the global active
+    // profile, which can be a different machine than the one the user entered.
+    if (aiTarget && event.toolName === "ssh_exec" && !event.input?.profile) {
+      event.input.profile = aiTarget;
+    }
+    return undefined;
+  });
+
   // Like /ssh, but for JumpServer profiles: /jms [<profile>] <command>.
   // Runs the command itself (no model round-trip) and shows the raw output.
   let cmdCtx: any = null;
@@ -124,6 +164,11 @@ export default function (pi: ExtensionAPI) {
         cmdCtx,
       );
       return { reused };
+    },
+    setTarget: (profile) => {
+      aiTarget = profile;
+      pi.appendEntry(JMS_MODE_ENTRY, { profile });
+      showTarget(cmdCtx?.ui);
     },
     shell: async (profile) => {
       const ctx = cmdCtx;
@@ -194,12 +239,12 @@ export default function (pi: ExtensionAPI) {
     invalidate: () => {},
   }));
   pi.registerCommand("jms", {
-    description: "Run a command on a JumpServer profile and show its output (/jms <profile> enters an interactive terminal; /jms [profile] <command> runs one; connect, list, use, share, close)",
+    description: "Run a command on a JumpServer profile and show its output (/jms <profile> enters a server for the AI to operate; exit, shell, use, share, close; /jms [profile] <command> runs one directly)",
     getArgumentCompletions: (prefix: string) => {
       const names = Object.entries(getProfiles())
         .filter(([, p]) => p.jump?.type === "jumpserver")
         .map(([n]) => n);
-      const words = ["list", "connect", "use", "share", "close", ...names];
+      const words = ["list", "exit", "shell", "use", "share", "close", ...names];
       const items = words.filter((w) => w.startsWith(prefix)).map((w) => ({ value: w, label: w }));
       return items.length > 0 ? items : null;
     },

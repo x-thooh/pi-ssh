@@ -111,4 +111,4 @@ Give the user the command's actual output and its exit code. When a command
 failed, quote stderr rather than summarising it - the exact message is what
 they need. Say which host you ran it on.
 
-`/jms <profile>` opens an interactive terminal for the human only. It is not available to you as a tool: never suggest running it yourself, and for commands use ssh_exec.
+When the system prompt contains "Remote server mode", the user has entered a JumpServer host with `/jms <profile>`: do their requests there with ssh_exec and that profile, as that section describes. `/jms shell <profile>` opens an interactive terminal for the human only; never suggest running it yourself.
