@@ -46,7 +46,7 @@ import { listTunnels, onTunnelsChanged, stopAllTunnels } from "./src/tunnels.ts"
 import { closeAllJumpSessions, closeJumpSession, hasJumpSession } from "./src/jumpserver.ts";
 import { createJmsHandler } from "./src/jms-command.ts";
 import { renderJmsResult } from "./src/jms-render.ts";
-import { runGuardedExec } from "./src/tools/ssh-exec.ts";
+import { openGuardedSession, runGuardedExec } from "./src/tools/ssh-exec.ts";
 
 const JMS_ENTRY = "jms-result";
 import { createTunnelIndicator } from "./src/ui.ts";
@@ -116,6 +116,14 @@ export default function (pi: ExtensionAPI) {
     hasSession: hasJumpSession,
     closeSession: closeJumpSession,
     closeAll: closeAllJumpSessions,
+    connect: async (profile) => {
+      const { reused } = await openGuardedSession(
+        { profile },
+        cmdCtx?.signal ?? new AbortController().signal,
+        cmdCtx,
+      );
+      return { reused };
+    },
     run: async (profile, command) => {
       const { result } = await runGuardedExec(
         { profile, command },
@@ -144,7 +152,7 @@ export default function (pi: ExtensionAPI) {
     invalidate: () => {},
   }));
   pi.registerCommand("jms", {
-    description: "Run a command on a JumpServer profile and show its output (/jms [profile] <command>, list, use, share, close)",
+    description: "Run a command on a JumpServer profile and show its output (/jms <profile> to enter, /jms [profile] <command>, list, use, share, close)",
     getArgumentCompletions: (prefix: string) => {
       const names = Object.entries(getProfiles())
         .filter(([, p]) => p.jump?.type === "jumpserver")

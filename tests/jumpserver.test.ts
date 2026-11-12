@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { startMockJumpServer, startMockSshd, type MockServer } from "./mock-jumpserver.ts";
-import { closeAllJumpSessions, findSentinel, hasJumpSession, redact, stripAnsi } from "../src/jumpserver.ts";
+import { closeAllJumpSessions, findSentinel, hasJumpSession, openJumpSession, redact, stripAnsi } from "../src/jumpserver.ts";
 import { runCommandOnProfile } from "../src/clients/run.ts";
 import { formatExecResult, formatProfileStatus } from "../src/formatting/formatters.ts";
 import { needsKeyUpgrade } from "../src/auto-key.ts";
@@ -89,6 +89,25 @@ describe("JumpServer sessions", () => {
       closeAllJumpSessions();
       await slow.close();
     }
+  });
+
+  it("opens a session without running a command, and later commands reuse it", async () => {
+    const p = jumpProfile(server.port);
+    const before = server.logins();
+    assert.equal(hasJumpSession("j-enter"), false);
+    assert.deepEqual(await openJumpSession("j-enter", p), { reused: false });
+    assert.equal(hasJumpSession("j-enter"), true);
+    assert.equal(server.logins() - before, 1);
+    assert.deepEqual(await openJumpSession("j-enter", p), { reused: true });
+    const r = await runCommandOnProfile("j-enter", p, "echo inside", {});
+    assert.equal(r.stdout, "inside\n");
+    assert.equal(server.logins() - before, 1, "entering and running share one login");
+  });
+
+  it("a failed open leaves no session behind", async () => {
+    const bad = { ...jumpProfile(server.port), password: "wrong" };
+    await assert.rejects(() => openJumpSession("j-enter-bad", bad));
+    assert.equal(hasJumpSession("j-enter-bad"), false);
   });
 
   it("merges stderr into stdout", async () => {

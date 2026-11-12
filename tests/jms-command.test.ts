@@ -14,6 +14,8 @@ describe("parseJmsArgs", () => {
     ["close", null, { kind: "close" }],
     ["share", null, { kind: "share" }],
     ["close s-fin-test", null, { kind: "close", profile: "s-fin-test" }],
+    ["s-fin-test", null, { kind: "enter", profile: "s-fin-test" }],
+    ["  s  ", null, { kind: "enter", profile: "s" }],
     ["s-fin-test hostname", null, { kind: "run", profile: "s-fin-test", command: "hostname" }],
     ["s-fin-test  ls -la /etc | head", null, { kind: "run", profile: "s-fin-test", command: "ls -la /etc | head" }],
     ["hostname", "s", { kind: "run", profile: "s", command: "hostname" }],
@@ -32,7 +34,6 @@ describe("parseJmsArgs", () => {
     assert.equal(parseJmsArgs("use nope", NAMES, null).kind, "error");
     assert.equal(parseJmsArgs("use", NAMES, null).kind, "error");
     assert.equal(parseJmsArgs("close nope", NAMES, null).kind, "error");
-    assert.equal(parseJmsArgs("s", NAMES, null).kind, "error");
   });
 
   it("uses the only JumpServer profile as an implicit default", () => {
@@ -50,11 +51,18 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
   const notes: string[] = [];
   const ran: string[] = [];
   const open = new Set<string>(["s"]);
+  const connected: string[] = [];
+  let connectError: Error | null = null;
   const handler = createJmsHandler({
     profiles: () => profiles,
     hasSession: (n) => open.has(n),
     closeSession: (n) => open.delete(n),
     closeAll: () => open.clear(),
+    connect: async (p) => {
+      if (connectError) throw connectError;
+      connected.push(p);
+      return { reused: connected.filter((x) => x === p).length > 1 };
+    },
     run: async (p, c) => {
       ran.push(`${p}:${c}`);
       return run ? run(p, c) : { output: "out\n", exitCode: 0, durationMs: 7 };
@@ -63,7 +71,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
     share: (t) => shared.push(t),
     notify: (m) => notes.push(m),
   });
-  return { handler, shown, shared, notes, ran, open };
+  return { handler, shown, shared, notes, ran, open, connected, failConnect: (e: Error) => (connectError = e) };
 }
 
 const jms = (asset?: string): SshProfile => ({
@@ -135,6 +143,41 @@ describe("/jms handler", () => {
     const { handler, ran, notes } = setup({ direct, s: jms("a") });
     await handler("direct hostname");
     assert.equal(ran.length, 0);
+    assert.match(notes[0], /not a JumpServer profile/);
+  });
+
+  it("a bare profile name enters the server: logs in, runs nothing, becomes the default", async () => {
+    const { handler, connected, ran, shown, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
+    await handler("s-fin-test");
+    assert.deepEqual(connected, ["s-fin-test"]);
+    assert.equal(ran.length, 0);
+    assert.equal(shown.length, 0);
+    assert.match(notes.at(-1)!, /Connected to s-fin-test .*asset=1\.2\.3\.4\)\. No command was run/);
+    await handler("uptime"); // default now set by entering
+    assert.deepEqual(ran, ["s-fin-test:uptime"]);
+  });
+
+  it("entering twice reports the session as reused", async () => {
+    const { handler, notes } = setup({ s: jms("a") });
+    await handler("s");
+    await handler("s");
+    assert.match(notes.at(-1)!, /Already connected to s/);
+  });
+
+  it("a failed login is reported and does not become the default", async () => {
+    const { handler, failConnect, ran, notes } = setup({ s: jms("a"), t: jms("b") });
+    failConnect(new Error("JumpServer login timed out at step 2/4"));
+    await handler("t");
+    assert.match(notes.at(-1)!, /Could not connect to t: JumpServer login timed out/);
+    await handler("hostname");
+    assert.equal(ran.length, 0);
+    assert.match(notes.at(-1)!, /No default profile/);
+  });
+
+  it("entering a non-JumpServer profile is refused", async () => {
+    const { handler, connected, notes } = setup({ direct, s: jms("a") });
+    await handler("direct");
+    assert.equal(connected.length, 0);
     assert.match(notes[0], /not a JumpServer profile/);
   });
 

@@ -300,6 +300,7 @@ Use a hostname/IP search string as `asset` (menu row numbers are per page and ch
 | `/ssh <command>` | Run a command on the active host. |
 | `/ssh-key` | Set up passwordless login for the active host. |
 | `/jms` | List JumpServer profiles, their asset and whether a session is open. |
+| `/jms <profile>` | Log in and stay there, running nothing. Makes it the default, so the next `/jms <command>` runs on it. Logging in shows no confirmation (it changes nothing on the server) but a new host key still needs your approval, and it is audited as `jms_connect`. |
 | `/jms <profile> <command>` | Run a command on a JumpServer profile and show the raw output in the transcript. |
 | `/jms use <profile>` | Set the default profile, so `/jms <command>` works without a name. Only this sets a default; a run never does, so a mistyped name cannot reach the wrong server. |
 | `/jms share` | Send the last result to the model (it is otherwise kept out of the context). |

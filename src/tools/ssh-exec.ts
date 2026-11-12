@@ -5,6 +5,7 @@
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { runCommandOnProfile } from "../clients/run.ts";
+import { openJumpSession } from "../jumpserver.ts";
 import { formatExecResult } from "../formatting/formatters.ts";
 import { resolveProfile, getGlobalPolicy } from "../config.ts";
 import { classifyCommand, resolvePolicy } from "../policy.ts";
@@ -67,6 +68,38 @@ export async function runGuardedExec(
     );
     audit({ id, profile: name, tool: "ssh_exec", exitCode: result.code });
     return { name, profile, note, result };
+}
+
+/**
+ * Log in to a JumpServer profile and keep the session open, running nothing.
+ * Same host-key approval and audit trail as a command; no confirmation is
+ * needed because logging in changes nothing on the server.
+ */
+export async function openGuardedSession(
+  params: { profile?: string },
+  signal: AbortSignal,
+  ctx?: GuardContext,
+) {
+  const resolved = resolveProfile(params.profile);
+  if (resolved.profile.jump?.type !== "jumpserver") {
+    throw new Error(`"${resolved.name}" is not a JumpServer profile.`);
+  }
+  const asset = (resolved.profile.jump as { asset?: string }).asset ?? "(unset)";
+  await guard(ctx, {
+    tool: "jms_connect",
+    profile: resolved.name,
+    target: `login ${resolved.profile.user}@${resolved.profile.host}:${resolved.profile.port} asset=${asset}`,
+    verdict: "auto",
+    message: "",
+  });
+  return withHostKeyApproval(ctx, { name: resolved.name, ...resolved.profile }, async (accept) => {
+    const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+    const { reused } = await openJumpSession(c.name, c.profile, {
+      signal,
+      acceptNewHostKey: accept,
+    });
+    return { name: c.name, profile: c.profile, reused };
+  });
 }
 
 export const SshExecTool = {

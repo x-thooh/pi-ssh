@@ -3,6 +3,7 @@
  *
  *   /jms                          list JumpServer profiles and session state
  *   /jms use <profile>            remember a default profile for this session
+ *   /jms <profile>                log in and stay there, running nothing
  *   /jms <profile> <command>      run a command on that profile
  *   /jms <command>                run it on the default profile
  *   /jms share                    send the last result to the model
@@ -22,10 +23,11 @@ export type JmsAction =
   | { kind: "use"; profile: string }
   | { kind: "close"; profile?: string }
   | { kind: "share" }
+  | { kind: "enter"; profile: string }
   | { kind: "run"; profile: string; command: string }
   | { kind: "error"; message: string };
 
-const USAGE = "Usage: /jms [list] | use <profile> | share | close [profile] | [<profile>] <command>";
+const USAGE = "Usage: /jms [list] | <profile> | use <profile> | share | close [profile] | [<profile>] <command>";
 
 /** Pure: turn the raw argument string into an action. */
 export function parseJmsArgs(
@@ -63,9 +65,7 @@ export function parseJmsArgs(
   }
 
   if (known(head)) {
-    if (restWords.length === 0) {
-      return { kind: "error", message: `Missing command. Use /jms ${head} <command>, or /jms use ${head}.` };
-    }
+    if (restWords.length === 0) return { kind: "enter", profile: head };
     return { kind: "run", profile: head, command: rest };
   }
 
@@ -88,6 +88,8 @@ export interface JmsDeps {
   hasSession(name: string): boolean;
   closeSession(name: string): boolean;
   closeAll(): void;
+  /** Log in and keep the session open without running anything. */
+  connect(profile: string): Promise<{ reused: boolean }>;
   /** Run through the guarded exec path; rejects when denied or failed. */
   run(profile: string, command: string): Promise<JmsOutcome>;
   /** Put a result in the transcript without sending it to the model. */
@@ -154,6 +156,33 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void>
         }
         const closed = deps.closeSession(action.profile);
         deps.notify(closed ? `Closed session ${action.profile}.` : `${action.profile} has no open session.`, "info");
+        return;
+      }
+
+      case "enter": {
+        if (running) {
+          deps.notify("A /jms command is still running.", "error");
+          return;
+        }
+        running = true;
+        deps.notify(`Connecting to ${action.profile}...`, "info");
+        try {
+          const { reused } = await deps.connect(action.profile);
+          // WHY: entering is an explicit choice of machine, like `/jms use`, so
+          // it is the one other thing that may set the default profile.
+          defaultName = action.profile;
+          const p = profiles[action.profile];
+          const asset = (p.jump as { asset?: string }).asset ?? "(unset)";
+          deps.notify(
+            `${reused ? "Already connected to" : "Connected to"} ${action.profile} (${p.user}@${p.host}:${p.port}, asset=${asset}). ` +
+              `No command was run. Use /jms <command> to run one, /jms close to leave.`,
+            "info",
+          );
+        } catch (err) {
+          deps.notify(`Could not connect to ${action.profile}: ${humanError(err)}`, "error");
+        } finally {
+          running = false;
+        }
         return;
       }
 

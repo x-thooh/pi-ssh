@@ -120,6 +120,11 @@ export class JumpSession {
     return !this.closed;
   }
 
+  /** Resolves once the menu is passed and the target shell answers; rejects if login fails. */
+  whenReady(): Promise<void> {
+    return this.ready;
+  }
+
   // -- low level IO --
 
   private onData(chunk: Buffer): void {
@@ -422,6 +427,22 @@ export function closeJumpSession(name: string): boolean {
 export function closeAllJumpSessions(): void {
   for (const session of [...sessions.values()]) session.close();
   sessions.clear();
+}
+
+/** Log in (or reuse the open session) without running any command. */
+export async function openJumpSession(
+  name: string,
+  profile: SshProfile,
+  options: JumpRunOptions = {},
+): Promise<{ reused: boolean }> {
+  let session = sessions.get(name);
+  const reused = Boolean(session?.alive);
+  if (!session?.alive) {
+    session = new JumpSession(name, profile, options);
+    sessions.set(name, session);
+  }
+  await session.whenReady();
+  return { reused };
 }
 
 export async function runOnJumpServer(
