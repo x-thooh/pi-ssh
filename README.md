@@ -246,6 +246,42 @@ SSH-level keepalives are enabled (every 15s, four unanswered probes before givin
 
 There is no automatic reconnect: a tunnel that dies stays dead and has to be started again.
 
+## JumpServer and jump hosts
+
+A profile can reach its host through a JumpServer (Koko) bastion, or by hopping through another profile. Use placeholders below; never commit real hosts or passwords.
+
+```json
+{
+  "corp-web": {
+    "host": "jump.example.com",
+    "port": 2222,
+    "user": "alice",
+    "passwordCmd": "security find-generic-password -s jms -w",
+    "jump": { "type": "jumpserver", "asset": "web-01", "account": "1" }
+  },
+  "inner": {
+    "host": "10.0.0.5",
+    "port": 22,
+    "user": "deploy",
+    "privateKeyPath": "~/.ssh/id_ed25519",
+    "jump": { "type": "ssh", "via": "gateway" }
+  }
+}
+```
+
+**JumpServer.** After SSH login to the bastion (its host key is checked against known_hosts as usual) pi answers the menu like an `expect` script: `Opt>` -> `p`, `[Host]>` -> asset, `ID>` -> account (default `1`). A `(yes/no)` prompt is answered with `yes`. Override the script for other versions with `jump.steps`: `[{ "expect": "regex", "send": "text with {asset} {account} {password}", "secret": true }]`. Login times out after 30s and the error shows the last 400 characters of sanitized output (password redacted). `idleTimeoutMs` (default 300000) closes an unused session; sessions also close when pi shuts down.
+
+**Passwords.** `passwordCmd` (run via `/bin/sh -c`, 10s timeout, trimmed stdout) beats `passwordEnv` (environment variable name), which beats `password`. They are resolved at connect time only and never stored, printed or logged. Profiles with a `jump` of type `jumpserver` are never auto-upgraded to key login.
+
+**Limitations of JumpServer sessions**
+- stderr is merged into stdout (`stderr` is always empty).
+- One persistent shell per profile: `cd` (including `cwd`) persists between calls, as do exported variables.
+- One command at a time per profile; calls are queued. On timeout pi sends Ctrl-C and resyncs; if that fails the session is dropped and the next call logs in again.
+- No SFTP (`ssh_upload`/`ssh_download`/`ssh_list`) and no `ssh_tunnel` through JumpServer; use `ssh_exec`.
+- Everything is recorded by JumpServer's own session audit.
+
+**SSH hops** (`"type": "ssh"`): pi connects to the `via` profile, forwards to the target, and verifies the target's host key itself. Up to 3 hops; cycles are rejected. `ssh_exec`, `ssh_upload`, `ssh_download` and `ssh_list` work; `ssh_tunnel` does not.
+
 ## Commands
 
 | Command | Description |

@@ -15,6 +15,8 @@ export interface RunOptions {
   readonly timeoutMs?: number;
   readonly signal?: AbortSignal;
   readonly acceptNewHostKey?: boolean;
+  /** Overall JumpServer login timeout (ms); default 30s. */
+  readonly loginTimeoutMs?: number;
   /** Profile lookup for `jump.via`; defaults to the stored profiles. */
   readonly lookup?: (name: string) => SshProfile | null;
 }

@@ -36,6 +36,10 @@ persistent shell, which has two consequences worth remembering:
 Read the exit code, not just the output. A command that printed nothing and
 exited 1 failed; reporting "done" because stdout was empty is wrong.
 
+## JumpServer and jump hosts
+
+A profile with `jump.type: "jumpserver"` is reached through a bastion menu. Only `ssh_exec` works: the shell is persistent (a `cd` sticks), stderr is merged into stdout, and commands run one at a time. Uploads, downloads, listings and tunnels are refused for it. Profiles with `jump.type: "ssh"` hop through another profile and support everything except tunnels. If a JumpServer login fails, the error shows the last output of the menu: compare it with `jump.steps`.
+
 ## Reading before writing
 
 Prefer commands that observe over commands that change, and look before you
