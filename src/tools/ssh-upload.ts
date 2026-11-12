@@ -4,7 +4,8 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { uploadFile, withConnection } from "../clients/ssh-client.ts";
+import { uploadFile } from "../clients/ssh-client.ts";
+import { assertNotJumpServer, withProfileConnection } from "../clients/run.ts";
 import fs from "node:fs";
 import { openSftp } from "../clients/ssh-client.ts";
 import { expandPath } from "../config.ts";
@@ -43,6 +44,7 @@ export const SshUploadTool = {
     ctx?: GuardContext,
   ) {
     const resolved = resolveProfile(params.profile);
+    assertNotJumpServer(resolved.profile, "ssh_upload");
     let size = "unknown";
     try {
       size = `${fs.statSync(expandPath(params.localPath)).size} bytes`;
@@ -52,7 +54,8 @@ export const SshUploadTool = {
     // Best effort and never prompts for trust: failure just means "unknown".
     let remoteExists = "unknown";
     try {
-      remoteExists = await withConnection(
+      remoteExists = await withProfileConnection(
+        resolved.name,
         resolved.profile,
         { signal, acceptNewHostKey: false },
         async (connection) => {
@@ -78,7 +81,8 @@ export const SshUploadTool = {
       { name: resolved.name, ...resolved.profile },
       async (accept) => {
         const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
-        const result = await withConnection(
+        const result = await withProfileConnection(
+          c.name,
           c.profile,
           { signal, acceptNewHostKey: accept },
           (connection) => uploadFile(connection, params.localPath, params.remotePath),

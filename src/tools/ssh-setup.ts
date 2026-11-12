@@ -43,6 +43,39 @@ export const SshSetupTool = {
         default: true,
       }),
     ),
+    passwordCmd: Type.Optional(
+      Type.String({
+        description:
+          "Shell command whose trimmed stdout is the password (e.g. a keychain lookup). Run at connect time; the result is never stored. Wins over passwordEnv and password.",
+      }),
+    ),
+    passwordEnv: Type.Optional(
+      Type.String({ description: "Name of an environment variable holding the password." }),
+    ),
+    jump: Type.Optional(
+      Type.Union([
+        Type.Object({
+          type: Type.Literal("jumpserver"),
+          asset: Type.Optional(Type.String({ description: "Asset id/name to pick in the JumpServer menu." })),
+          account: Type.Optional(Type.String({ description: "Account id in the menu. Default \"1\"." })),
+          steps: Type.Optional(
+            Type.Array(
+              Type.Object({
+                expect: Type.String({ description: "Regex to wait for." }),
+                send: Type.String({ description: "Reply; supports {asset} {account} {password}." }),
+                secret: Type.Optional(Type.Boolean()),
+              }),
+              { description: "Replace the default menu script (Opt>, [Host]>, ID>)." },
+            ),
+          ),
+          idleTimeoutMs: Type.Optional(Type.Number({ description: "Close the session after this idle time. Default 300000." })),
+        }),
+        Type.Object({
+          type: Type.Literal("ssh"),
+          via: Type.String({ description: "Name of another profile to hop through." }),
+        }),
+      ]),
+    ),
     strictHostKey: Type.Optional(
       Type.Boolean({
         description:
@@ -66,9 +99,9 @@ export const SshSetupTool = {
     if (!Number.isInteger(port) || port < 1 || port > 65535) {
       throw new Error("port must be an integer between 1 and 65535.");
     }
-    if (!params.password && !params.privateKeyPath) {
+    if (!params.password && !params.privateKeyPath && !params.passwordCmd && !params.passwordEnv) {
       throw new Error(
-        "Give either a password or a privateKeyPath -- otherwise there is no way to log in.",
+        "Give either a password or a privateKeyPath (or passwordCmd/passwordEnv) -- otherwise there is no way to log in.",
       );
     }
 
@@ -77,6 +110,9 @@ export const SshSetupTool = {
       user: params.user.trim(),
       port,
       ...(params.password ? { password: params.password } : {}),
+      ...(params.passwordCmd ? { passwordCmd: params.passwordCmd } : {}),
+      ...(params.passwordEnv ? { passwordEnv: params.passwordEnv } : {}),
+      ...(params.jump ? { jump: params.jump as SshProfile["jump"] } : {}),
       ...(params.privateKeyPath
         ? { privateKeyPath: expandPath(params.privateKeyPath) }
         : {}),
@@ -114,7 +150,7 @@ export const SshSetupTool = {
         host: profile.host,
         port: profile.port,
         user: profile.user,
-        hasPassword: Boolean(profile.password),
+        hasPassword: Boolean(profile.password || profile.passwordCmd || profile.passwordEnv),
         hasKey: Boolean(profile.privateKeyPath),
       },
     };

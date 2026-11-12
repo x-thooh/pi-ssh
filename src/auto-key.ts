@@ -26,6 +26,8 @@ export interface UpgradeOutcome {
 /** Does this profile still log in with a password and nothing else? */
 export function needsKeyUpgrade(profile: SshProfile): boolean {
   if (profile.autoKey === false) return false;
+  // A bastion login is not key-upgradable; leave its password source alone.
+  if (profile.jump?.type === "jumpserver") return false;
   return Boolean(profile.password) && !profile.privateKeyPath;
 }
 

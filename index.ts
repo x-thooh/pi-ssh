@@ -43,6 +43,7 @@ import { SshAuthorizeTool } from "./src/tools/ssh-authorize.ts";
 import { SshDoctorTool } from "./src/tools/ssh-doctor.ts";
 import { SshTunnelTool } from "./src/tools/ssh-tunnel.ts";
 import { listTunnels, onTunnelsChanged, stopAllTunnels } from "./src/tunnels.ts";
+import { closeAllJumpSessions } from "./src/jumpserver.ts";
 import { createTunnelIndicator } from "./src/ui.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -65,6 +66,7 @@ export default function (pi: ExtensionAPI) {
   // A tunnel is the one thing here that outlives its tool call, so it must
   // not outlive the session that opened it.
   pi.on("session_shutdown", async () => {
+    closeAllJumpSessions();
     await stopAllTunnels();
   });
 

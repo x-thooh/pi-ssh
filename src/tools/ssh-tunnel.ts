@@ -217,6 +217,11 @@ export const SshTunnelTool = {
     // start
     const resolved = resolveProfile(params.profile);
     const stored = resolved.profile.tunnels?.[params.name];
+    if (resolved.profile.jump) {
+      throw new Error(
+        "ssh_tunnel is not supported for profiles with a jump configuration (JumpServer or ssh hop).",
+      );
+    }
     const definition =
       params.destHost || params.destPort ? buildDefinition(params) : stored;
 

@@ -30,10 +30,14 @@ export function formatBytes(bytes: number): string {
 }
 
 /** How a profile authenticates, without revealing any secret. */
+import { hasJumpSession } from "../jumpserver.ts";
+
 export function describeAuth(profile: SshProfile): string {
   const methods: string[] = [];
   if (profile.privateKeyPath) methods.push(`key ${profile.privateKeyPath}`);
-  if (profile.password) methods.push("password (stored)");
+  if (profile.passwordCmd) methods.push("password (from command)");
+  else if (profile.passwordEnv) methods.push(`password (from env ${profile.passwordEnv})`);
+  else if (profile.password) methods.push("password (stored)");
   return methods.length > 0 ? methods.join(", ") : "none configured";
 }
 
@@ -53,6 +57,11 @@ export function formatProfileStatus(
     const port = profile.port === 22 ? "" : `:${profile.port}`;
     lines.push(`${marker} ${name}: ${profile.user}@${profile.host}${port}`);
     lines.push(`    auth: ${describeAuth(profile)}`);
+    if (profile.jump?.type === "ssh") lines.push(`    jump: ssh via ${profile.jump.via}`);
+    if (profile.jump?.type === "jumpserver") {
+      const open = hasJumpSession(name) ? "session open" : "no open session";
+      lines.push(`    jump: jumpserver${profile.jump.asset ? `, asset ${profile.jump.asset}` : ""} (${open})`);
+    }
     if (profile.strictHostKey === false) {
       lines.push("    host key checking is OFF for this profile");
     }

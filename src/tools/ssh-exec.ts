@@ -4,7 +4,7 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { execCommand, withConnection } from "../clients/ssh-client.ts";
+import { runCommandOnProfile } from "../clients/run.ts";
 import { formatExecResult } from "../formatting/formatters.ts";
 import { resolveProfile, getGlobalPolicy } from "../config.ts";
 import { classifyCommand, resolvePolicy } from "../policy.ts";
@@ -77,12 +77,12 @@ export const SshExecTool = {
       { name: resolved.name, ...resolved.profile },
       async (accept) => {
         const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
-        const result = await withConnection(
-          c.profile,
-          { signal, acceptNewHostKey: accept },
-          (connection) =>
-            execCommand(connection, params.command, { cwd: params.cwd, timeoutMs, signal }),
-        );
+        const result = await runCommandOnProfile(c.name, c.profile, params.command, {
+          cwd: params.cwd,
+          timeoutMs,
+          signal,
+          acceptNewHostKey: accept,
+        });
         return { ...c, result };
       },
     );

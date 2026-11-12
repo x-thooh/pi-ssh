@@ -4,7 +4,8 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { downloadFile, withConnection } from "../clients/ssh-client.ts";
+import { downloadFile } from "../clients/ssh-client.ts";
+import { assertNotJumpServer, withProfileConnection } from "../clients/run.ts";
 import fs from "node:fs";
 import { expandPath } from "../config.ts";
 import { formatTransfer } from "../formatting/formatters.ts";
@@ -42,6 +43,7 @@ export const SshDownloadTool = {
     ctx?: GuardContext,
   ) {
     const resolved = resolveProfile(params.profile);
+    assertNotJumpServer(resolved.profile, "ssh_download");
     // Only an overwrite changes anything on this machine worth asking about.
     if (fs.existsSync(expandPath(params.localPath))) {
       await guard(ctx, {
@@ -58,7 +60,8 @@ export const SshDownloadTool = {
       { name: resolved.name, ...resolved.profile },
       async (accept) => {
         const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
-        const result = await withConnection(
+        const result = await withProfileConnection(
+          c.name,
           c.profile,
           { signal, acceptNewHostKey: accept },
           (connection) => downloadFile(connection, params.remotePath, params.localPath),

@@ -9,12 +9,38 @@ import type { PolicyConfig } from "./policy.ts";
 
 // Configuration
 
+export interface JumpStep {
+  /** Regex matched against the output received since the previous step. */
+  readonly expect: string;
+  /** Reply; supports {asset} {account} {password} placeholders. */
+  readonly send: string;
+  /** The reply is sensitive and is redacted from error output. */
+  readonly secret?: boolean;
+}
+
+export type JumpConfig =
+  | {
+      readonly type: "jumpserver";
+      readonly asset?: string;
+      readonly account?: string;
+      readonly steps?: readonly JumpStep[];
+      /** Close the persistent session after this much inactivity. Default 300000. */
+      readonly idleTimeoutMs?: number;
+    }
+  | { readonly type: "ssh"; readonly via: string };
+
 export interface SshProfile {
   readonly host: string;
   readonly port: number;
   readonly user: string;
   /** Password auth. Stored in plaintext, so the file is 0600. */
   readonly password?: string;
+  /** Shell command whose trimmed stdout is the password. Wins over passwordEnv and password. */
+  readonly passwordCmd?: string;
+  /** Name of an environment variable holding the password. Wins over password. */
+  readonly passwordEnv?: string;
+  /** Reach this host through a JumpServer bastion or another profile. */
+  readonly jump?: JumpConfig;
   /** Path to a private key on this machine. The key itself is not copied. */
   readonly privateKeyPath?: string;
   /** Passphrase for that key, when it has one. */
@@ -143,6 +169,9 @@ export interface SetupParams {
   readonly user: string;
   readonly port?: number;
   readonly password?: string;
+  readonly passwordCmd?: string;
+  readonly passwordEnv?: string;
+  readonly jump?: JumpConfig;
   readonly privateKeyPath?: string;
   readonly passphrase?: string;
   readonly strictHostKey?: boolean;

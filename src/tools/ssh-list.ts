@@ -4,7 +4,8 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { listDirectory, withConnection } from "../clients/ssh-client.ts";
+import { listDirectory, } from "../clients/ssh-client.ts";
+import { withProfileConnection } from "../clients/run.ts";
 import { formatDirectory } from "../formatting/formatters.ts";
 import { resolveProfile } from "../config.ts";
 import { withHostKeyApproval, type GuardContext } from "../guard.ts";
@@ -39,7 +40,8 @@ export const SshListTool = {
       { name: resolved.name, ...resolved.profile },
       async (accept) => {
         const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
-        const entries = await withConnection(
+        const entries = await withProfileConnection(
+          c.name,
           c.profile,
           { signal, acceptNewHostKey: accept },
           (connection) => listDirectory(connection, remotePath),
