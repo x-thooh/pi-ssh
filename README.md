@@ -10,7 +10,7 @@ Run commands on remote hosts, move files over SFTP, and turn a password login in
 
 ```bash
 # Install from npm
-pi install npm:@patimweb/pi-ssh
+pi install npm:git:github.com/x-thooh/pi-ssh
 
 # Install from local path during development
 pi install /path/to/pi-ssh

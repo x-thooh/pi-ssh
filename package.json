@@ -1,5 +1,5 @@
 {
-  "name": "@patimweb/pi-ssh",
+  "name": "@xthooh/pi-ssh",
   "version": "1.3.2",
   "description": "SSH client extension for the pi coding agent. Run commands, transfer files over SFTP, and set up key-based login on remote hosts.",
   "keywords": [
@@ -10,7 +10,7 @@
     "remote",
     "ssh2"
   ],
-  "author": "Patrick Weppelmann",
+  "author": "xthooh (fork of Patrick Weppelmann's pi-ssh)",
   "license": "MIT",
   "type": "module",
   "engines": {
@@ -18,10 +18,10 @@
   },
   "repository": {
     "type": "git",
-    "url": "https://github.com/Smotherer007/pi-ssh.git"
+    "url": "https://github.com/x-thooh/pi-ssh.git"
   },
   "bugs": {
-    "url": "https://github.com/Smotherer007/pi-ssh/issues"
+    "url": "https://github.com/x-thooh/pi-ssh/issues"
   },
   "scripts": {
     "build": "echo 'No build step defined'",
