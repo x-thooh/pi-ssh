@@ -11,44 +11,23 @@ import { classifyCommand, resolvePolicy } from "../policy.ts";
 import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
 import { audit } from "../audit.ts";
 
-export const SshExecTool = {
-  name: "ssh_exec",
-  label: "SSH Run Command",
-  description:
-    "Run a shell command on the configured remote host and return its output and exit code. The connection is opened for this command and closed again. Commands run non-interactively, so anything that expects input or a TTY (sudo with a password prompt, an editor, top) will hang until the timeout.",
-  parameters: Type.Object({
-    command: Type.String({ description: "The command line to run on the remote host." }),
-    cwd: Type.Optional(
-      Type.String({ description: "Directory to run it in. Default: the login directory." }),
-    ),
-    timeoutSeconds: Type.Optional(
-      Type.Number({ description: "Give up after this long. Default 120.", default: 120 }),
-    ),
-    profile: Type.Optional(
-      Type.String({ description: "SSH profile to use. Defaults to the active one." }),
-    ),
-    acceptNewHostKey: Type.Optional(
-      Type.Boolean({
-        description:
-          "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.",
-        default: false,
-      }),
-    ),
-  }),
+export interface ExecParams {
+  command: string;
+  cwd?: string;
+  timeoutSeconds?: number;
+  profile?: string;
+  acceptNewHostKey?: boolean;
+}
 
-  async execute(
-    _toolCallId: string,
-    params: {
-      command: string;
-      cwd?: string;
-      timeoutSeconds?: number;
-      profile?: string;
-      acceptNewHostKey?: boolean;
-    },
-    signal: AbortSignal,
-    _onUpdate?: unknown,
-    ctx?: GuardContext,
-  ) {
+/**
+ * Classify, confirm, run and audit one command. Shared by the ssh_exec tool
+ * and the /jms command, so both go through exactly the same guard.
+ */
+export async function runGuardedExec(
+  params: ExecParams,
+  signal: AbortSignal,
+  ctx?: GuardContext,
+) {
     if (!params.command?.trim()) throw new Error("command must not be empty.");
 
     const resolved = resolveProfile(params.profile);
@@ -87,6 +66,42 @@ export const SshExecTool = {
       },
     );
     audit({ id, profile: name, tool: "ssh_exec", exitCode: result.code });
+    return { name, profile, note, result };
+}
+
+export const SshExecTool = {
+  name: "ssh_exec",
+  label: "SSH Run Command",
+  description:
+    "Run a shell command on the configured remote host and return its output and exit code. The connection is opened for this command and closed again. Commands run non-interactively, so anything that expects input or a TTY (sudo with a password prompt, an editor, top) will hang until the timeout.",
+  parameters: Type.Object({
+    command: Type.String({ description: "The command line to run on the remote host." }),
+    cwd: Type.Optional(
+      Type.String({ description: "Directory to run it in. Default: the login directory." }),
+    ),
+    timeoutSeconds: Type.Optional(
+      Type.Number({ description: "Give up after this long. Default 120.", default: 120 }),
+    ),
+    profile: Type.Optional(
+      Type.String({ description: "SSH profile to use. Defaults to the active one." }),
+    ),
+    acceptNewHostKey: Type.Optional(
+      Type.Boolean({
+        description:
+          "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.",
+        default: false,
+      }),
+    ),
+  }),
+
+  async execute(
+    _toolCallId: string,
+    params: ExecParams,
+    signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
+  ) {
+    const { name, profile, note, result } = await runGuardedExec(params, signal, ctx);
 
     return {
       content: [{ type: "text" as const, text: withNote(formatExecResult(result), note) }],

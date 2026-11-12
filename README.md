@@ -300,11 +300,12 @@ Use a hostname/IP search string as `asset` (menu row numbers are per page and ch
 | `/ssh <command>` | Run a command on the active host. |
 | `/ssh-key` | Set up passwordless login for the active host. |
 | `/jms` | List JumpServer profiles, their asset and whether a session is open. |
-| `/jms <profile> <command>` | Run a command on a JumpServer profile. |
+| `/jms <profile> <command>` | Run a command on a JumpServer profile and show the raw output in the transcript. |
 | `/jms use <profile>` | Set the default profile, so `/jms <command>` works without a name. Only this sets a default; a run never does, so a mistyped name cannot reach the wrong server. |
+| `/jms share` | Send the last result to the model (it is otherwise kept out of the context). |
 | `/jms close [profile]` | Close one or all open JumpServer sessions. |
 
-`/jms`, like `/ssh`, only asks the model to call `ssh_exec` with the command verbatim, so every command still goes through the confirmation policy and the audit log.
+Unlike `/ssh`, `/jms` runs the command itself instead of asking the model to: no model round-trip, no summarising, no context-compression of the output. It goes through the same guard as `ssh_exec` (read-only commands run, everything else asks you first, hard-denied commands are refused) and is written to the audit log. The result shows 40 lines and folds the rest behind the usual expand key; lines are wrapped to the terminal width, CJK included.
 
 ## Skills
 

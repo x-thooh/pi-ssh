@@ -72,6 +72,7 @@ describe("Extension entry point", () => {
     mod.default({
       registerTool: (tool: { name: string }) => registered.push(tool.name),
       registerCommand: (name: string) => commands.push(name),
+      registerEntryRenderer: () => {},
       on: () => {},
       sendUserMessage: () => {},
     } as any);
@@ -86,6 +87,7 @@ describe("Extension entry point", () => {
     mod.default({
       registerTool: () => {},
       registerCommand: () => {},
+      registerEntryRenderer: () => {},
       on: (event: string) => events.push(event),
       sendUserMessage: () => {},
     } as any);

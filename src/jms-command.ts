@@ -1,26 +1,31 @@
 /**
- * /jms -- a slash command for JumpServer profiles, the counterpart of /ssh.
+ * /jms -- run commands on JumpServer profiles straight from the prompt.
  *
  *   /jms                          list JumpServer profiles and session state
  *   /jms use <profile>            remember a default profile for this session
  *   /jms <profile> <command>      run a command on that profile
  *   /jms <command>                run it on the default profile
+ *   /jms share                    send the last result to the model
  *   /jms close [profile]          close the open session(s)
  *
- * Like /ssh it only asks the model to call ssh_exec, so every command still
- * passes the confirmation policy inside the tool. Nothing here runs a command.
+ * The command runs directly (no model round-trip) through the same guard as
+ * the ssh_exec tool, so confirmation, policy and audit still apply. The result
+ * is shown in the transcript but kept out of the model's context until you
+ * run `/jms share`.
  */
 
 import type { SshProfile } from "./types.ts";
+import type { JmsResultData } from "./jms-render.ts";
 
 export type JmsAction =
   | { kind: "list" }
   | { kind: "use"; profile: string }
   | { kind: "close"; profile?: string }
+  | { kind: "share" }
   | { kind: "run"; profile: string; command: string }
   | { kind: "error"; message: string };
 
-const USAGE = "Usage: /jms [list] | use <profile> | close [profile] | [<profile>] <command>";
+const USAGE = "Usage: /jms [list] | use <profile> | share | close [profile] | [<profile>] <command>";
 
 /** Pure: turn the raw argument string into an action. */
 export function parseJmsArgs(
@@ -37,6 +42,8 @@ export function parseJmsArgs(
   const rest = text.slice(head.length).trim();
   const known = (n: string) => names.includes(n);
   const available = names.length ? ` Available: ${names.join(", ")}.` : " No JumpServer profile is configured.";
+
+  if (head === "share" && !rest) return { kind: "share" };
 
   if (head === "use") {
     if (!rest) return { kind: "error", message: `${USAGE}${available}` };
@@ -69,13 +76,24 @@ export function parseJmsArgs(
   return { kind: "run", profile, command: text };
 }
 
+export interface JmsOutcome {
+  readonly output: string;
+  readonly exitCode: number | null;
+  readonly durationMs: number;
+  readonly truncated?: boolean;
+}
+
 export interface JmsDeps {
   profiles(): Record<string, SshProfile>;
   hasSession(name: string): boolean;
   closeSession(name: string): boolean;
   closeAll(): void;
-  /** Ask the model to do something (same mechanism /ssh uses). */
-  send(message: string): void;
+  /** Run through the guarded exec path; rejects when denied or failed. */
+  run(profile: string, command: string): Promise<JmsOutcome>;
+  /** Put a result in the transcript without sending it to the model. */
+  show(entry: JmsResultData): void;
+  /** Hand text to the model as a user message. */
+  share(text: string): void;
   notify(message: string, level: "info" | "error"): void;
 }
 
@@ -85,10 +103,18 @@ function jumpserverNames(profiles: Record<string, SshProfile>): string[] {
     .map(([n]) => n);
 }
 
-export function createJmsHandler(deps: JmsDeps): (args: string) => void {
-  let defaultName: string | null = null;
+/** The guard's errors are written for the model; the human needs less. */
+function humanError(err: unknown): string {
+  const msg = err instanceof Error ? err.message : String(err);
+  return msg.replace(/\s*Stop; do not retry[^.]*\./, "").replace(/\s*Do not retry or work around it\./, "");
+}
 
-  return (args: string) => {
+export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void> {
+  let defaultName: string | null = null;
+  let last: JmsResultData | null = null;
+  let running = false;
+
+  return async (args: string) => {
     const profiles = deps.profiles();
     const names = jumpserverNames(profiles);
     const others = Object.keys(profiles).filter((n) => !names.includes(n));
@@ -131,17 +157,43 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => void {
         return;
       }
 
-      case "run": {
-        // WHY: the default is only ever set by an explicit `/jms use`. Setting
-        // it from the last run would send a mistyped profile name to the wrong
-        // server as a command.
-        // WHY: spell the command out verbatim and forbid retries, so the model
-        // cannot "improve" it around a denial. The tool still enforces policy.
-        deps.send(
-          `Run exactly this command with ssh_exec using profile "${action.profile}" (a JumpServer profile). ` +
-            `Do not change it, do not add flags, and if the user denies it, stop. Show me the output:\n${action.command}`,
+      case "share": {
+        if (!last) {
+          deps.notify("Nothing to share yet: run a /jms command first.", "error");
+          return;
+        }
+        const r = last;
+        deps.share(
+          `Output of \`${r.command}\` on ${r.profile} (${r.error ? `failed: ${r.error}` : `exit ${r.exitCode}`}):\n\n${r.output}`,
         );
+        return;
+      }
+
+      case "run": {
+        // WHY: one command at a time per handler. A second /jms while the first
+        // waits on a confirmation dialog would stack prompts on the user.
+        if (running) {
+          deps.notify("A /jms command is still running.", "error");
+          return;
+        }
+        running = true;
         deps.notify(`Running on ${action.profile}...`, "info");
+        try {
+          const r = await deps.run(action.profile, action.command);
+          last = { profile: action.profile, command: action.command, ...r };
+        } catch (err) {
+          last = {
+            profile: action.profile,
+            command: action.command,
+            output: "",
+            exitCode: null,
+            durationMs: 0,
+            error: humanError(err),
+          };
+        } finally {
+          running = false;
+        }
+        deps.show(last);
         return;
       }
     }

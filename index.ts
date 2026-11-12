@@ -45,6 +45,10 @@ import { SshTunnelTool } from "./src/tools/ssh-tunnel.ts";
 import { listTunnels, onTunnelsChanged, stopAllTunnels } from "./src/tunnels.ts";
 import { closeAllJumpSessions, closeJumpSession, hasJumpSession } from "./src/jumpserver.ts";
 import { createJmsHandler } from "./src/jms-command.ts";
+import { renderJmsResult } from "./src/jms-render.ts";
+import { runGuardedExec } from "./src/tools/ssh-exec.ts";
+
+const JMS_ENTRY = "jms-result";
 import { createTunnelIndicator } from "./src/ui.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -104,29 +108,54 @@ export default function (pi: ExtensionAPI) {
     },
   });
 
-  // Like /ssh, but for JumpServer profiles: /jms [<profile>] <command>
-  let jmsCtx: { ui: { notify(m: string, l?: string): void } } | null = null;
+  // Like /ssh, but for JumpServer profiles: /jms [<profile>] <command>.
+  // Runs the command itself (no model round-trip) and shows the raw output.
+  let cmdCtx: any = null;
   const jms = createJmsHandler({
     profiles: getProfiles,
     hasSession: hasJumpSession,
     closeSession: closeJumpSession,
     closeAll: closeAllJumpSessions,
-    send: (message) => pi.sendUserMessage(message, { deliverAs: "steer" }),
-    notify: (message, level) => jmsCtx?.ui.notify(message, level),
+    run: async (profile, command) => {
+      const { result } = await runGuardedExec(
+        { profile, command },
+        cmdCtx?.signal ?? new AbortController().signal,
+        cmdCtx,
+      );
+      return {
+        output: result.stdout + (result.stderr ? `\n${result.stderr}` : ""),
+        exitCode: result.code,
+        durationMs: result.durationMs,
+        truncated: result.truncated,
+      };
+    },
+    show: (entry) => pi.appendEntry(JMS_ENTRY, entry),
+    share: (text) => pi.sendUserMessage(text),
+    notify: (message, level) => cmdCtx?.ui.notify(message, level),
   });
+  pi.registerEntryRenderer(JMS_ENTRY, (entry: any, options: any, theme: any) => ({
+    render: (width: number) =>
+      renderJmsResult(entry.data, width, Boolean(options?.expanded), {
+        dim: (s) => theme.fg("dim", s),
+        ok: (s) => theme.fg("success", s),
+        bad: (s) => theme.fg("error", s),
+        accent: (s) => theme.fg("accent", s),
+      }, options?.keyHint?.("app.tools.expand", "expand") ?? "expand"),
+    invalidate: () => {},
+  }));
   pi.registerCommand("jms", {
-    description: "Run a command on a JumpServer profile (/jms [profile] <command>, list, use, close)",
+    description: "Run a command on a JumpServer profile and show its output (/jms [profile] <command>, list, use, share, close)",
     getArgumentCompletions: (prefix: string) => {
       const names = Object.entries(getProfiles())
         .filter(([, p]) => p.jump?.type === "jumpserver")
         .map(([n]) => n);
-      const words = ["list", "use", "close", ...names];
+      const words = ["list", "use", "share", "close", ...names];
       const items = words.filter((w) => w.startsWith(prefix)).map((w) => ({ value: w, label: w }));
       return items.length > 0 ? items : null;
     },
     handler: async (args, ctx) => {
-      jmsCtx = ctx as never;
-      jms(args);
+      cmdCtx = ctx;
+      await jms(args);
     },
   });
 

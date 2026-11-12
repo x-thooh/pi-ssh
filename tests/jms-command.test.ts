@@ -1,6 +1,7 @@
 import { describe, it } from "node:test";
 import assert from "node:assert/strict";
-import { createJmsHandler, parseJmsArgs } from "../src/jms-command.ts";
+import { createJmsHandler, parseJmsArgs, type JmsOutcome } from "../src/jms-command.ts";
+import type { JmsResultData } from "../src/jms-render.ts";
 import type { SshProfile } from "../src/types.ts";
 
 const NAMES = ["s", "s-fin-test"];
@@ -11,6 +12,7 @@ describe("parseJmsArgs", () => {
     ["  list ", null, { kind: "list" }],
     ["use s", null, { kind: "use", profile: "s" }],
     ["close", null, { kind: "close" }],
+    ["share", null, { kind: "share" }],
     ["close s-fin-test", null, { kind: "close", profile: "s-fin-test" }],
     ["s-fin-test hostname", null, { kind: "run", profile: "s-fin-test", command: "hostname" }],
     ["s-fin-test  ls -la /etc | head", null, { kind: "run", profile: "s-fin-test", command: "ls -la /etc | head" }],
@@ -42,19 +44,26 @@ describe("parseJmsArgs", () => {
   });
 });
 
-function setup(profiles: Record<string, SshProfile>) {
-  const sent: string[] = [];
+function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string) => Promise<JmsOutcome>) {
+  const shown: JmsResultData[] = [];
+  const shared: string[] = [];
   const notes: string[] = [];
+  const ran: string[] = [];
   const open = new Set<string>(["s"]);
   const handler = createJmsHandler({
     profiles: () => profiles,
     hasSession: (n) => open.has(n),
     closeSession: (n) => open.delete(n),
     closeAll: () => open.clear(),
-    send: (m) => sent.push(m),
+    run: async (p, c) => {
+      ran.push(`${p}:${c}`);
+      return run ? run(p, c) : { output: "out\n", exitCode: 0, durationMs: 7 };
+    },
+    show: (e) => shown.push(e),
+    share: (t) => shared.push(t),
     notify: (m) => notes.push(m),
   });
-  return { handler, sent, notes, open };
+  return { handler, shown, shared, notes, ran, open };
 }
 
 const jms = (asset?: string): SshProfile => ({
@@ -66,9 +75,9 @@ const jms = (asset?: string): SshProfile => ({
 const direct: SshProfile = { host: "h", port: 22, user: "u" };
 
 describe("/jms handler", () => {
-  it("lists only JumpServer profiles with asset and session state, never secrets", () => {
+  it("lists only JumpServer profiles with asset and session state, never secrets", async () => {
     const { handler, notes } = setup({ s: { ...jms(), passwordCmd: "echo topsecret" }, "s-fin-test": jms("1.2.3.4"), direct });
-    handler("");
+    await handler("");
     const out = notes[0];
     assert.match(out, /s {2}u@jump\.example\.com:2222 {2}asset=\(unset\)/);
     assert.match(out, /s-fin-test.*asset=1\.2\.3\.4.*no session/);
@@ -76,56 +85,102 @@ describe("/jms handler", () => {
     assert.match(out, /\[session open\]/);
   });
 
-  it("asks the model to run the command verbatim, without running anything itself", () => {
-    const { handler, sent } = setup({ s: jms("a"), "s-fin-test": jms("b") });
-    handler("s-fin-test hostname; id");
-    assert.equal(sent.length, 1);
-    assert.match(sent[0], /profile "s-fin-test"/);
-    assert.match(sent[0], /Do not change it/);
-    assert.match(sent[0], /stop/);
-    assert.ok(sent[0].endsWith("hostname; id"));
+  it("runs the command itself and shows the raw result without involving the model", async () => {
+    const { handler, shown, shared, ran } = setup({ s: jms("a"), "s-fin-test": jms("b") }, async () => ({
+      output: "line1\nline2\n",
+      exitCode: 2,
+      durationMs: 12,
+    }));
+    await handler("s-fin-test ls -al /etc");
+    assert.deepEqual(ran, ["s-fin-test:ls -al /etc"]);
+    assert.equal(shared.length, 0);
+    assert.equal(shown.length, 1);
+    assert.equal(shown[0].profile, "s-fin-test");
+    assert.equal(shown[0].command, "ls -al /etc");
+    assert.equal(shown[0].output, "line1\nline2\n");
+    assert.equal(shown[0].exitCode, 2);
+    assert.equal(shown[0].error, undefined);
   });
 
-  it("only an explicit /jms use sets the default; a run never does", () => {
-    const { handler, sent, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
-    handler("s-fin-test hostname");
-    handler("uptime"); // no default yet: must NOT silently reuse s-fin-test
-    assert.equal(sent.length, 1);
+  it("shows a denial or failure as an error entry, without model-directed wording", async () => {
+    const { handler, shown } = setup({ s: jms("a"), t: jms("b") }, async () => {
+      throw new Error("ssh_exec was denied by the user. Stop; do not retry or try to get around it.");
+    });
+    await handler("s touch /tmp/x");
+    assert.equal(shown.length, 1);
+    assert.equal(shown[0].exitCode, null);
+    assert.match(shown[0].error!, /denied by the user/);
+    assert.doesNotMatch(shown[0].error!, /do not retry|get around/i);
+  });
+
+  it("only an explicit /jms use sets the default; a run never does", async () => {
+    const { handler, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
+    await handler("s-fin-test hostname");
+    await handler("uptime"); // no default yet: must NOT silently reuse s-fin-test
+    assert.deepEqual(ran, ["s-fin-test:hostname"]);
     assert.match(notes.at(-1)!, /No default profile/);
-    handler("use s-fin-test");
-    handler("uptime");
-    assert.match(sent[1], /profile "s-fin-test"/);
+    await handler("use s-fin-test");
+    await handler("uptime");
+    assert.deepEqual(ran, ["s-fin-test:hostname", "s-fin-test:uptime"]);
   });
 
-  it("a mistyped profile is never run as a command on the sole profile's neighbour", () => {
-    const { handler, sent, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
-    handler("s-fn-test rm -rf /tmp/x");
-    assert.equal(sent.length, 0);
+  it("a mistyped profile is never run as a command", async () => {
+    const { handler, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
+    await handler("s-fn-test rm -rf /tmp/x");
+    assert.equal(ran.length, 0);
     assert.match(notes[0], /No default profile/);
   });
 
-  it("names a non-JumpServer profile instead of running it", () => {
-    const { handler, sent, notes } = setup({ direct, s: jms("a") });
-    handler("direct hostname");
-    assert.equal(sent.length, 0);
+  it("names a non-JumpServer profile instead of running it", async () => {
+    const { handler, ran, notes } = setup({ direct, s: jms("a") });
+    await handler("direct hostname");
+    assert.equal(ran.length, 0);
     assert.match(notes[0], /not a JumpServer profile/);
   });
 
-  it("closes one or all sessions", () => {
+  it("share sends the last result to the model, and only then", async () => {
+    const { handler, shared, notes } = setup({ s: jms("a") });
+    await handler("share");
+    assert.equal(shared.length, 0);
+    assert.match(notes[0], /Nothing to share/);
+    await handler("hostname");
+    assert.equal(shared.length, 0);
+    await handler("share");
+    assert.equal(shared.length, 1);
+    assert.match(shared[0], /`hostname` on s \(exit 0\)/);
+    assert.match(shared[0], /out/);
+  });
+
+  it("refuses a second command while one is waiting", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => (release = r));
+    const { handler, ran, notes } = setup({ s: jms("a") }, async () => {
+      await gate;
+      return { output: "", exitCode: 0, durationMs: 1 };
+    });
+    const first = handler("hostname");
+    await handler("uptime");
+    assert.match(notes.at(-1)!, /still running/);
+    release();
+    await first;
+    assert.equal(ran.length, 1);
+  });
+
+  it("closes one or all sessions", async () => {
     const { handler, open, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
-    handler("close s");
+    await handler("close s");
     assert.equal(open.has("s"), false);
     assert.match(notes.at(-1)!, /Closed session s/);
-    handler("close s-fin-test");
+    await handler("close s-fin-test");
     assert.match(notes.at(-1)!, /no open session/);
     open.add("s");
-    handler("close");
+    await handler("close");
     assert.equal(open.size, 0);
   });
 
-  it("explains when nothing is configured", () => {
+  it("explains when nothing is configured", async () => {
     const { handler, notes } = setup({ direct });
-    handler("list");
+    await handler("list");
     assert.match(notes[0], /No JumpServer profile configured/);
   });
 });
