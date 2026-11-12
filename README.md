@@ -300,13 +300,18 @@ Use a hostname/IP search string as `asset` (menu row numbers are per page and ch
 | `/ssh <command>` | Run a command on the active host. |
 | `/ssh-key` | Set up passwordless login for the active host. |
 | `/jms` | List JumpServer profiles, their asset and whether a session is open. |
-| `/jms <profile>` | **Enter the server**: logs in, runs nothing, and from then on the AI works on that host for you. Just write what you want ("how full is the disk?", "show the last errors in the nginx log"); the AI runs it with `ssh_exec` on that profile. `/jms exit` leaves. |
+| `/jms <profile>` | **Enter the server**: logs in, runs nothing, and from then on the AI works on that host for you. |
+| `/jms <request>` | Ask the AI to do something on the current server, in plain words: `/jms 看一下磁盘使用情况`. You can also just type the sentence without `/jms` once you are inside. |
+| `/jms <profile> <request>` | Same, on that server (entering it first if you are not inside). |
+| `/jms !<command>` | Run one command **yourself**, verbatim, and show the raw output (no model involved): `/jms !df -h`. |
+| `/jms <profile> !<command>` | Same, on that server. |
 | `/jms exit` | Leave the server and close its session. |
-| `/jms <profile> <command>` | Run one command yourself and show the raw output in the transcript (no model involved). |
 | `/jms shell <profile>` | A real interactive terminal for **you** (`vim`, `top`, Ctrl-C ...). `exit` ends it, **Ctrl-]** leaves at once. See below. |
-| `/jms use <profile>` | Set the default profile for `/jms <command>`. Entering a server sets it too; running a command never does, so a mistyped name cannot reach the wrong server. |
-| `/jms share` | Send the last direct `/jms` result to the model (it is otherwise kept out of its context). |
+| `/jms use <profile>` | Set the default profile for `/jms !<command>` without entering. Entering sets it too; running a command never does, so a mistyped name cannot reach the wrong server. |
+| `/jms share` | Send the last `/jms !` result to the model (it is otherwise kept out of its context). |
 | `/jms close [profile]` | Close one or all background sessions. |
+
+Only a leading `!` runs text verbatim. Anything else after `/jms` is a request for the AI, so a sentence is never handed to a root shell as if it were a command.
 
 ### Server mode (`/jms <profile>`)
 

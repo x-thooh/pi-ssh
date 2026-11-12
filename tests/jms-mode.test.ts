@@ -72,13 +72,14 @@ describe("/jms server mode through the extension", () => {
     const handlers: Record<string, (...a: any[]) => any> = {};
     const commands: Record<string, any> = {};
     const appended: Array<{ type: string; data: any }> = [];
+    const sent: Array<{ text: string; opts: any }> = [];
     const pi: any = {
       registerTool() {},
       registerCommand: (n: string, o: any) => (commands[n] = o),
       registerEntryRenderer() {},
       on: (e: string, fn: any) => (handlers[e] = fn),
       appendEntry: (type: string, data: any) => appended.push({ type, data }),
-      sendUserMessage() {},
+      sendUserMessage: (text: string, opts: any) => sent.push({ text, opts }),
     };
     (await import("../index.ts")).default(pi);
     const notes: string[] = [];
@@ -95,7 +96,7 @@ describe("/jms server mode through the extension", () => {
         setWidget() {},
       },
     };
-    return { handlers, commands, appended, notes, status, ctx };
+    return { handlers, commands, appended, sent, notes, status, ctx };
   }
   const turn = async (h: any) => (await h.handlers.before_agent_start({ systemPrompt: "BASE" }))?.systemPrompt;
   const call = (h: any, input: any, tool = "ssh_exec") => {
@@ -126,6 +127,30 @@ describe("/jms server mode through the extension", () => {
     // an explicit profile is respected; other tools are untouched
     assert.deepEqual(await call(h, { command: "ls", profile: "other" }), { command: "ls", profile: "other" });
     assert.deepEqual(await call(h, { path: "/" }, "ssh_list"), { path: "/" });
+  });
+
+  it("a sentence after /jms goes to the AI, never to the server's shell", async () => {
+    const h = await load();
+    const text = "看一下这台机器的主机名、负载和磁盘";
+    await h.commands.jms.handler(`m ${text}`, h.ctx);
+    assert.deepEqual(h.sent.map((x) => x.text), [text]);
+    assert.deepEqual(h.appended.filter((a) => a.type === "jms-result"), [], "no command was executed");
+    assert.match(await turn(h), /profile "m"/, "the AI is pointed at the server");
+    // already inside: no profile needed, still no login and no execution
+    await h.commands.jms.handler("再看看内存", h.ctx);
+    assert.deepEqual(h.sent.map((x) => x.text), [text, "再看看内存"]);
+    assert.deepEqual(h.appended.filter((a) => a.type === "jms-result"), []);
+  });
+
+  it("!command runs verbatim on the server and shows the raw output without involving the AI", async () => {
+    const h = await load();
+    await h.commands.jms.handler("m !echo raw-output", h.ctx);
+    const results = h.appended.filter((a) => a.type === "jms-result");
+    assert.equal(results.length, 1);
+    assert.equal(results[0].data.command, "echo raw-output");
+    assert.match(results[0].data.output, /raw-output/);
+    assert.equal(results[0].data.exitCode, 0);
+    assert.deepEqual(h.sent, [], "nothing was sent to the model");
   });
 
   it("exit removes the prompt and the fallback", async () => {

@@ -165,6 +165,7 @@ export default function (pi: ExtensionAPI) {
       );
       return { reused };
     },
+    ask: (text) => pi.sendUserMessage(text, { deliverAs: "steer" }),
     setTarget: (profile) => {
       aiTarget = profile;
       pi.appendEntry(JMS_MODE_ENTRY, { profile });
@@ -239,7 +240,7 @@ export default function (pi: ExtensionAPI) {
     invalidate: () => {},
   }));
   pi.registerCommand("jms", {
-    description: "Run a command on a JumpServer profile and show its output (/jms <profile> enters a server for the AI to operate; exit, shell, use, share, close; /jms [profile] <command> runs one directly)",
+    description: "Run a command on a JumpServer profile and show its output (/jms <profile> enters a server for the AI to operate; exit, shell, use, share, close; /jms <request> asks the AI; /jms !<command> runs one directly)",
     getArgumentCompletions: (prefix: string) => {
       const names = Object.entries(getProfiles())
         .filter(([, p]) => p.jump?.type === "jumpserver")

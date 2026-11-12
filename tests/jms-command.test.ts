@@ -18,10 +18,16 @@ describe("parseJmsArgs", () => {
     ["  s  ", null, { kind: "enter", profile: "s" }],
     ["shell s-fin-test", null, { kind: "shell", profile: "s-fin-test" }],
     ["exit", null, { kind: "leave" }],
-    ["s-fin-test hostname", null, { kind: "run", profile: "s-fin-test", command: "hostname" }],
-    ["s-fin-test  ls -la /etc | head", null, { kind: "run", profile: "s-fin-test", command: "ls -la /etc | head" }],
-    ["hostname", "s", { kind: "run", profile: "s", command: "hostname" }],
-    ["id; uptime", "s-fin-test", { kind: "run", profile: "s-fin-test", command: "id; uptime" }],
+    // "!" runs verbatim, with or without a profile
+    ["s-fin-test !hostname", null, { kind: "run", profile: "s-fin-test", command: "hostname" }],
+    ["s-fin-test  !  ls -la /etc | head", null, { kind: "run", profile: "s-fin-test", command: "ls -la /etc | head" }],
+    ["!hostname", "s", { kind: "run", profile: "s", command: "hostname" }],
+    ["! id; uptime", "s-fin-test", { kind: "run", profile: "s-fin-test", command: "id; uptime" }],
+    // anything else is a request for the AI -- sentences are never run as commands
+    ["看一下这台机器的主机名、负载和磁盘", "s-fin-test", { kind: "ask", profile: "s-fin-test", text: "看一下这台机器的主机名、负载和磁盘" }],
+    ["s 看一下磁盘", null, { kind: "ask", profile: "s", text: "看一下磁盘" }],
+    ["hostname", "s", { kind: "ask", profile: "s", text: "hostname" }],
+    ["restart nginx and check its log", "s-fin-test", { kind: "ask", profile: "s-fin-test", text: "restart nginx and check its log" }],
     // a default that no longer exists is ignored
     ["hostname", "gone", { kind: "error" }],
   ];
@@ -41,11 +47,18 @@ describe("parseJmsArgs", () => {
   });
 
   it("uses the only JumpServer profile as an implicit default", () => {
-    assert.deepEqual(parseJmsArgs("hostname", ["only"], null), { kind: "run", profile: "only", command: "hostname" });
+    assert.deepEqual(parseJmsArgs("check the disk", ["only"], null), { kind: "ask", profile: "only", text: "check the disk" });
+    assert.deepEqual(parseJmsArgs("!hostname", ["only"], null), { kind: "run", profile: "only", command: "hostname" });
   });
 
   it("does not guess when several profiles exist and no default is set", () => {
-    assert.equal(parseJmsArgs("hostname", NAMES, null).kind, "error");
+    assert.equal(parseJmsArgs("check the disk", NAMES, null).kind, "error");
+    assert.equal(parseJmsArgs("!hostname", NAMES, null).kind, "error");
+  });
+
+  it("a lone ! has nothing to run", () => {
+    assert.equal(parseJmsArgs("!", NAMES, "s").kind, "error");
+    assert.equal(parseJmsArgs("s !  ", NAMES, null).kind, "error");
   });
 });
 
@@ -58,6 +71,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
   const connected: string[] = [];
   const shells: string[] = [];
   const targets: (string | null)[] = [];
+  const asked: string[] = [];
   let shellError: Error | null = null;
   let connectError: Error | null = null;
   const handler = createJmsHandler({
@@ -65,6 +79,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
     hasSession: (n) => open.has(n),
     closeSession: (n) => open.delete(n),
     closeAll: () => open.clear(),
+    ask: (t) => asked.push(t),
     setTarget: (p) => targets.push(p),
     shell: async (p) => {
       if (shellError) throw shellError;
@@ -84,7 +99,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
     share: (t) => shared.push(t),
     notify: (m) => notes.push(m),
   });
-  return { handler, shown, shared, notes, ran, open, connected, shells, targets, failShell: (e: Error) => (shellError = e), failConnect: (e: Error) => (connectError = e) };
+  return { handler, shown, shared, notes, ran, open, connected, shells, targets, asked, failShell: (e: Error) => (shellError = e), failConnect: (e: Error) => (connectError = e) };
 }
 
 const jms = (asset?: string): SshProfile => ({
@@ -112,7 +127,7 @@ describe("/jms handler", () => {
       exitCode: 2,
       durationMs: 12,
     }));
-    await handler("s-fin-test ls -al /etc");
+    await handler("s-fin-test !ls -al /etc");
     assert.deepEqual(ran, ["s-fin-test:ls -al /etc"]);
     assert.equal(shared.length, 0);
     assert.equal(shown.length, 1);
@@ -127,7 +142,7 @@ describe("/jms handler", () => {
     const { handler, shown } = setup({ s: jms("a"), t: jms("b") }, async () => {
       throw new Error("ssh_exec was denied by the user. Stop; do not retry or try to get around it.");
     });
-    await handler("s touch /tmp/x");
+    await handler("s !touch /tmp/x");
     assert.equal(shown.length, 1);
     assert.equal(shown[0].exitCode, null);
     assert.match(shown[0].error!, /denied by the user/);
@@ -136,25 +151,25 @@ describe("/jms handler", () => {
 
   it("only an explicit /jms use sets the default; a run never does", async () => {
     const { handler, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
-    await handler("s-fin-test hostname");
-    await handler("uptime"); // no default yet: must NOT silently reuse s-fin-test
+    await handler("s-fin-test !hostname");
+    await handler("!uptime"); // no default yet: must NOT silently reuse s-fin-test
     assert.deepEqual(ran, ["s-fin-test:hostname"]);
-    assert.match(notes.at(-1)!, /No default profile/);
+    assert.match(notes.at(-1)!, /No server selected/);
     await handler("use s-fin-test");
-    await handler("uptime");
+    await handler("!uptime");
     assert.deepEqual(ran, ["s-fin-test:hostname", "s-fin-test:uptime"]);
   });
 
   it("a mistyped profile is never run as a command", async () => {
     const { handler, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("b") });
-    await handler("s-fn-test rm -rf /tmp/x");
+    await handler("s-fn-test !rm -rf /tmp/x");
     assert.equal(ran.length, 0);
-    assert.match(notes[0], /No default profile/);
+    assert.match(notes[0], /No server selected/);
   });
 
   it("names a non-JumpServer profile instead of running it", async () => {
     const { handler, ran, notes } = setup({ direct, s: jms("a") });
-    await handler("direct hostname");
+    await handler("direct !hostname");
     assert.equal(ran.length, 0);
     assert.match(notes[0], /not a JumpServer profile/);
   });
@@ -168,7 +183,7 @@ describe("/jms handler", () => {
     assert.equal(ran.length, 0);
     assert.equal(shown.length, 0);
     assert.match(notes.at(-1)!, /Entered s-fin-test .*asset=1\.2\.3\.4\)\. Nothing was run\. Tell the AI/);
-    await handler("uptime"); // a direct command still works and uses the default
+    await handler("!uptime"); // a direct command still works and uses the default
     assert.deepEqual(ran, ["s-fin-test:uptime"]);
   });
 
@@ -178,9 +193,53 @@ describe("/jms handler", () => {
     await handler("t");
     assert.match(notes.at(-1)!, /Could not enter t: JumpServer login timed out/);
     assert.deepEqual(targets, []);
-    await handler("hostname");
+    await handler("!hostname");
     assert.equal(ran.length, 0);
-    assert.match(notes.at(-1)!, /No default profile/);
+    assert.match(notes.at(-1)!, /No server selected/);
+  });
+
+  it("a sentence is a request for the AI: it enters the server if needed and is never run as a command", async () => {
+    const { handler, asked, ran, connected, targets, shown } = setup({ s: jms("a"), "s-fin-test": jms("b") });
+    await handler("s-fin-test 看一下这台机器的主机名、负载和磁盘");
+    assert.deepEqual(connected, ["s-fin-test"]);
+    assert.deepEqual(targets, ["s-fin-test"]);
+    assert.deepEqual(asked, ["看一下这台机器的主机名、负载和磁盘"]);
+    assert.equal(ran.length, 0, "nothing was executed on the server by us");
+    assert.equal(shown.length, 0);
+  });
+
+  it("inside a server a request needs no profile and does not log in again", async () => {
+    const { handler, asked, connected, ran } = setup({ s: jms("a"), "s-fin-test": jms("b") });
+    await handler("s-fin-test");
+    await handler("restart nginx");
+    await handler("and show its log");
+    assert.deepEqual(connected, ["s-fin-test"], "one login only");
+    assert.deepEqual(asked, ["restart nginx", "and show its log"]);
+    assert.equal(ran.length, 0);
+  });
+
+  it("a request on another server switches the AI to it", async () => {
+    const { handler, targets, asked } = setup({ a: jms("1"), b: jms("2") });
+    await handler("a check disk");
+    await handler("b check disk");
+    assert.deepEqual(targets, ["a", "b"]);
+    assert.deepEqual(asked, ["check disk", "check disk"]);
+  });
+
+  it("a failed login sends nothing to the AI", async () => {
+    const { handler, failConnect, asked, targets, notes } = setup({ s: jms("a"), t: jms("b") });
+    failConnect(new Error("JumpServer login timed out at step 2/4"));
+    await handler("t check disk");
+    assert.deepEqual(asked, []);
+    assert.deepEqual(targets, []);
+    assert.match(notes.at(-1)!, /Could not enter t/);
+  });
+
+  it("a request with no server selected asks which one instead of guessing", async () => {
+    const { handler, asked, notes } = setup({ s: jms("a"), t: jms("b") });
+    await handler("check disk");
+    assert.deepEqual(asked, []);
+    assert.match(notes[0], /No server selected/);
   });
 
   it("exit leaves the server: clears the target, closes its session, drops the default", async () => {
@@ -191,7 +250,7 @@ describe("/jms handler", () => {
     assert.deepEqual(targets, ["s-fin-test", null]);
     assert.equal(open.has("s-fin-test"), false);
     assert.match(notes.at(-1)!, /Left s-fin-test/);
-    await handler("uptime");
+    await handler("!uptime");
     assert.equal(ran.length, 0, "default is gone after exit");
   });
 
@@ -223,9 +282,9 @@ describe("/jms handler", () => {
     failShell(new Error("needs the pi terminal UI"));
     await handler("shell t");
     assert.match(notes.at(-1)!, /Could not open a terminal on t: needs the pi terminal UI/);
-    await handler("hostname");
+    await handler("!hostname");
     assert.equal(ran.length, 0);
-    assert.match(notes.at(-1)!, /No default profile/);
+    assert.match(notes.at(-1)!, /No server selected/);
   });
 
   it("entering or opening a shell on a non-JumpServer profile is refused", async () => {
@@ -242,7 +301,7 @@ describe("/jms handler", () => {
     await handler("share");
     assert.equal(shared.length, 0);
     assert.match(notes[0], /Nothing to share/);
-    await handler("hostname");
+    await handler("!hostname");
     assert.equal(shared.length, 0);
     await handler("share");
     assert.equal(shared.length, 1);
@@ -257,8 +316,8 @@ describe("/jms handler", () => {
       await gate;
       return { output: "", exitCode: 0, durationMs: 1 };
     });
-    const first = handler("hostname");
-    await handler("uptime");
+    const first = handler("!hostname");
+    await handler("!uptime");
     assert.match(notes.at(-1)!, /still running/);
     release();
     await first;
