@@ -215,9 +215,14 @@ describe("file transfer", () => {
 
 describe("key bootstrap", () => {
   const originalHome = process.env.HOME;
+  // WHY: these tests save profiles; without an isolated HOME they wrote
+  // "e2e"/"keeps" entries into the developer's real ~/.pi/ssh-config.json.
+  const isolatedHome = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ssh-home-")));
+  process.env.HOME = isolatedHome;
 
   after(() => {
     process.env.HOME = originalHome;
+    fs.rmSync(isolatedHome, { recursive: true, force: true });
   });
 
   it("generates a key, installs it, and proves a key-only login works", async (t) => {
