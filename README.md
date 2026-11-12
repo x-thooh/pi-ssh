@@ -260,11 +260,44 @@ There is no automatic reconnect: a tunnel that dies stays dead and has to be sta
 | `ssh-remote-work` | Choosing the right host, the absence of a shell and a TTY, reading before writing, and what each connection error actually means. |
 | `ssh-key-setup` | The password-to-key switch, why an existing key is never overwritten, and why the password stays until the key is proven. |
 
+## Safety / confirmation
+
+Anything that changes server state, credentials or trust needs explicit human approval, asked **inside each tool** (not via a hook). With no interactive UI the answer is always *deny*.
+
+| Tool | Behaviour |
+| --- | --- |
+| `ssh_exec` | Classified (below). Read-only runs without a prompt; otherwise *Allow once* / *Allow this exact command for this session* / *Deny*. Hard-denied commands (`rm -rf /`, `mkfs*`, `dd of=/dev/…`, fork bomb, redirect to `/dev/sd*`) are refused without a prompt. |
+| `ssh_upload` | Always confirms (shows local/remote path, size, whether the remote file exists). |
+| `ssh_download` | Confirms only when the local destination exists. |
+| `ssh_tunnel` `start` | Always confirms; warns loudly if `bind` is not loopback. `stop`/`list`/`define`/`forget` don't prompt. |
+| `ssh_setup`, `ssh_authorize`, `ssh_profile delete`, `ssh_keygen overwrite:true` | Confirm. |
+| `ssh_list`, `ssh_status`, `ssh_doctor` | No prompt. |
+| Unknown host key | Prompt to trust; changed/revoked keys stay hard failures. |
+
+A command is read-only only if it contains no redirection (except `2>&1`, `>/dev/null`), `$(`, backticks, `<(`, here-docs, `tee`, `xargs`, `sed -i`, `sudo`, `eval`, `sh -c`, newlines or parse problems, and every `; && || | &` segment starts with an allowlisted program (`ls cat head tail grep rg find df du ps uname uptime free ip ss hostname whoami id date wc stat file pwd echo env journalctl`, plus read-only subcommands of `systemctl docker kubectl lxc git`). Leading `VAR=x` assignments, absolute paths (`/bin/rm`) and `\rm` are not allowlisted. When unsure it asks.
+
+### Policy modes
+
+In `~/.pi/ssh-config.json`, top level (global) and/or per profile (profile overrides; `deny` lists are combined):
+
+```json
+{ "policy": { "mode": "confirm-writes", "extraReadOnly": ["^myctl status"], "deny": ["shutdown"] } }
+```
+
+- `confirm-writes` (default): read-only auto, the rest confirm.
+- `confirm-all`: everything confirms.
+- `readonly`: commands that would need confirmation are rejected without prompting.
+- `extraReadOnly` / `deny`: regex strings, matched per segment / on the whole command.
+
+### Audit log
+
+Every guarded call appends a JSON line to `~/.pi/ssh-audit.jsonl` (mode 0600; override with `PI_SSH_AUDIT_FILE`): `ts`, `id`, `profile`, `tool`, `target`, `decision` (`auto`, `human-allow`, `human-allow-session`, `human-deny`, `policy-deny`, `no-ui-deny`); `ssh_exec` adds a second line with the same `id` and `exitCode`. Passwords and passphrases are never written, and an audit failure never breaks a tool.
+
 ## Host key verification
 
 Host keys are checked against `~/.ssh/known_hosts` — the same file OpenSSH uses, so hosts you have already visited with `ssh` are recognised, and hosts recorded here are recognised by `ssh`. Hashed entries (`ssh-keygen -H`) and `[host]:port` forms are both understood.
 
-- **Unknown host** → the connection is refused and the fingerprint shown. Confirm it, then re-run with `acceptNewHostKey: true` to record it.
+- **Unknown host** → the human is prompted inside the tool (host:port, key type, fingerprint) with *Trust and record* / *Reject*. The `acceptNewHostKey` parameter is **deprecated and ignored**: a model cannot approve a key. With no UI the connection is refused.
 - **Changed key** → a hard failure with both fingerprints. This is what a machine-in-the-middle looks like; it is also what a reinstalled server looks like. It has to be resolved deliberately with `ssh-keygen -R <host>`.
 - **Revoked key** (`@revoked` in known_hosts) → always refused.
 

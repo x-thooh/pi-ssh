@@ -36,6 +36,16 @@ persistent shell, which has two consequences worth remembering:
 Read the exit code, not just the output. A command that printed nothing and
 exited 1 failed; reporting "done" because stdout was empty is wrong.
 
+## Confirmation and safety
+
+Read-only commands (`ls`, `cat`, `grep`, `df`, `systemctl status`, `docker ps`,
+...) run directly. Anything else prompts the human, and so do uploads, tunnel
+starts and credential changes. A denial means stop: do not retry, rephrase or
+split the command to get around it. Never obfuscate a command (variable
+assignments, `$(...)`, encoding, `sh -c`) to dodge classification; that only
+makes it prompt. With no UI everything non-read-only is denied. Every call is
+logged to `~/.pi/ssh-audit.jsonl`.
+
 ## Reading before writing
 
 Prefer commands that observe over commands that change, and look before you
@@ -60,10 +70,9 @@ binaries and pushes the whole content through the model for nothing.
 
 The error usually says which layer failed. Work from it rather than retrying:
 
-- **"not in known_hosts"** - the host has never been seen. Show the user the
-  fingerprint and ask them to confirm it against the server before re-running
-  with `acceptNewHostKey: true`. Do not pass that flag reflexively; it is the
-  moment the trust decision is made.
+- **"not in known_hosts"** - the host has never been seen. The tool itself
+  prompts the human to trust the fingerprint; `acceptNewHostKey` is ignored,
+  so do not pass it. If the human rejects, stop.
 - **"HOST KEY CHANGED"** - stop. This is either a reinstalled server or
   someone between you and it. Never work around it by disabling host key
   checking. Relay the message; the user has to resolve it deliberately.

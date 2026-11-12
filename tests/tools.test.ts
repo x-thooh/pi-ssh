@@ -33,6 +33,10 @@ type TestServer = Awaited<ReturnType<typeof startTestServer>>;
 const signal = new AbortController().signal;
 let server: TestServer = null;
 
+/** A fake pi context whose human approves everything (and trusts new hosts). */
+const allow = { hasUI: true, ui: { confirm: async () => true, select: async (_t: string, o: string[]) => o[0] } };
+const reject = { hasUI: true, ui: { confirm: async () => false, select: async (_t: string, o: string[]) => o[o.length - 1] } };
+
 before(async () => {
   server = await startTestServer();
 });
@@ -43,61 +47,58 @@ after(() => {
   fs.rmSync(testHome, { recursive: true, force: true });
 });
 
-describe("ssh_setup validation", () => {
-  it("refuses an empty host or user", () => {
-    assert.throws(
-      () => SshSetupTool.execute("1", { name: "a", host: "  ", user: "u", password: "p" }, signal),
+describe("ssh_setup validation", async () => {
+  it("refuses an empty host or user", async () => {
+    await assert.rejects(
+      () => SshSetupTool.execute("1", { name: "a", host: "  ", user: "u", password: "p" }, signal, undefined, allow),
       /host must not be empty/,
     );
-    assert.throws(
-      () => SshSetupTool.execute("1", { name: "a", host: "h", user: " ", password: "p" }, signal),
+    await assert.rejects(
+      () => SshSetupTool.execute("1", { name: "a", host: "h", user: " ", password: "p" }, signal, undefined, allow),
       /user must not be empty/,
     );
   });
 
-  it("refuses an impossible port", () => {
-    assert.throws(
-      () => SshSetupTool.execute("1", { name: "a", host: "h", user: "u", password: "p", port: 0 }, signal),
+  it("refuses an impossible port", async () => {
+    await assert.rejects(
+      () => SshSetupTool.execute("1", { name: "a", host: "h", user: "u", password: "p", port: 0 }, signal, undefined, allow),
       /between 1 and 65535/,
     );
   });
 
-  it("refuses a profile with no way to log in", () => {
-    assert.throws(
-      () => SshSetupTool.execute("1", { name: "a", host: "h", user: "u" }, signal),
+  it("refuses a profile with no way to log in", async () => {
+    await assert.rejects(
+      () => SshSetupTool.execute("1", { name: "a", host: "h", user: "u" }, signal, undefined, allow),
       /password or a privateKeyPath/,
     );
   });
 
-  it("announces that a password-only profile will be upgraded to a key", () => {
-    const result = SshSetupTool.execute(
+  it("announces that a password-only profile will be upgraded to a key", async () => {
+    const result = await SshSetupTool.execute(
       "1",
       { name: "pw", host: "h", user: "u", password: "p" },
-      signal,
-    );
+      signal, undefined, allow);
     assert.match(result.content[0].text, /a key will be installed/);
     assert.match(result.content[0].text, /password removed from the config/);
     assert.strictEqual(result.details.hasPassword, true);
     assert.strictEqual(result.details.hasKey, false);
   });
 
-  it("points at ssh_authorize instead when the upgrade is switched off", () => {
-    const result = SshSetupTool.execute(
+  it("points at ssh_authorize instead when the upgrade is switched off", async () => {
+    const result = await SshSetupTool.execute(
       "1",
       { name: "pw-manual", host: "h", user: "u", password: "p", autoKey: false },
-      signal,
-    );
+      signal, undefined, allow);
     assert.match(result.content[0].text, /keep doing so/);
     assert.match(result.content[0].text, /ssh_authorize/);
     assert.strictEqual(config.getProfile("pw-manual")!.autoKey, false);
   });
 
-  it("expands a tilde in the key path", () => {
-    const result = SshSetupTool.execute(
+  it("expands a tilde in the key path", async () => {
+    const result = await SshSetupTool.execute(
       "1",
       { name: "keyed", host: "h", user: "u", privateKeyPath: "~/.ssh/id_test" },
-      signal,
-    );
+      signal, undefined, allow);
     assert.strictEqual(result.details.hasKey, true);
     assert.strictEqual(
       config.getProfile("keyed")!.privateKeyPath,
@@ -106,41 +107,41 @@ describe("ssh_setup validation", () => {
   });
 });
 
-describe("ssh_profile", () => {
-  it("lists profiles without arguments", () => {
-    const result = SshProfileTool.execute("1", {}, signal);
+describe("ssh_profile", async () => {
+  it("lists profiles without arguments", async () => {
+    const result = await SshProfileTool.execute("1", {}, signal, undefined, allow);
     assert.ok(result.details.profiles.includes("pw"));
   });
 
-  it("requires a name for use and delete", () => {
-    assert.throws(() => SshProfileTool.execute("1", { action: "use" }, signal), /requires a profile name/);
+  it("requires a name for use and delete", async () => {
+    await assert.rejects(() => SshProfileTool.execute("1", { action: "use" }, signal, undefined, allow), /requires a profile name/);
   });
 
-  it("rejects an unknown action", () => {
-    assert.throws(
-      () => SshProfileTool.execute("1", { action: "rename", name: "pw" }, signal),
+  it("rejects an unknown action", async () => {
+    await assert.rejects(
+      () => SshProfileTool.execute("1", { action: "rename", name: "pw" }, signal, undefined, allow),
       /Unknown action/,
     );
   });
 
-  it("reports a missing profile on delete", () => {
-    const result = SshProfileTool.execute("1", { action: "delete", name: "ghost" }, signal);
+  it("reports a missing profile on delete", async () => {
+    const result = await SshProfileTool.execute("1", { action: "delete", name: "ghost" }, signal, undefined, allow);
     assert.strictEqual(result.details.deleted, false);
   });
 });
 
-describe("ssh_doctor", () => {
-  it("reports the environment and finds no blocking problem", () => {
+describe("ssh_doctor", async () => {
+  it("reports the environment and finds no blocking problem", async () => {
     const result = SshDoctorTool.execute("1", {}, signal);
     assert.deepStrictEqual(result.details.problems, []);
     assert.match(result.content[0].text, /Nothing needs to be installed/);
   });
 });
 
-describe("ssh_keygen", () => {
-  it("writes both halves with sane permissions", () => {
+describe("ssh_keygen", async () => {
+  it("writes both halves with sane permissions", async () => {
     const target = path.join(testHome, "keys", "generated");
-    const result = SshKeygenTool.execute("1", { path: target, comment: "unit test" }, signal);
+    const result = await SshKeygenTool.execute("1", { path: target, comment: "unit test" }, signal, undefined, allow);
 
     assert.ok(fs.existsSync(target));
     assert.ok(fs.existsSync(`${target}.pub`));
@@ -151,41 +152,40 @@ describe("ssh_keygen", () => {
     assert.match(result.details.publicKey, /^ssh-ed25519 .* unit test$/);
   });
 
-  it("refuses to overwrite an existing key", () => {
+  it("refuses to overwrite an existing key", async () => {
     const target = path.join(testHome, "keys", "generated");
-    assert.throws(
-      () => SshKeygenTool.execute("1", { path: target }, signal),
+    await assert.rejects(
+      () => SshKeygenTool.execute("1", { path: target }, signal, undefined, allow),
       /already exists/,
     );
   });
 
-  it("overwrites only when told to", () => {
+  it("overwrites only when told to", async () => {
     const target = path.join(testHome, "keys", "generated");
     const before = fs.readFileSync(target, "utf-8");
-    SshKeygenTool.execute("1", { path: target, overwrite: true }, signal);
+    await SshKeygenTool.execute("1", { path: target, overwrite: true }, signal, undefined, allow);
     assert.notStrictEqual(fs.readFileSync(target, "utf-8"), before);
   });
 
-  it("refuses to attach the key to a profile that does not exist", () => {
-    assert.throws(
+  it("refuses to attach the key to a profile that does not exist", async () => {
+    await assert.rejects(
       () =>
         SshKeygenTool.execute(
           "1",
           { path: path.join(testHome, "keys", "other"), profile: "ghost" },
-          signal,
-        ),
+          signal, undefined, allow),
       /does not exist/,
     );
   });
 
-  it("records the key in a profile when asked", () => {
+  it("records the key in a profile when asked", async () => {
     const target = path.join(testHome, "keys", "attached");
-    SshKeygenTool.execute("1", { path: target, profile: "pw" }, signal);
+    await SshKeygenTool.execute("1", { path: target, profile: "pw" }, signal, undefined, allow);
     assert.strictEqual(config.getProfile("pw")!.privateKeyPath, target);
   });
 });
 
-describe("tools against a real server", () => {
+describe("tools against a real server", async () => {
   before(() => {
     if (!server) return;
     config.saveProfile("live", {
@@ -203,9 +203,8 @@ describe("tools against a real server", () => {
     // First contact has to record the host key, which status does not do.
     await SshExecTool.execute(
       "1",
-      { command: "true", profile: "live", acceptNewHostKey: true },
-      signal,
-    );
+      { command: "true", profile: "live" },
+      signal, undefined, allow);
 
     const result = await SshStatusTool.execute("1", { profile: "live", connect: true }, signal);
     assert.strictEqual(result.details.reachable, true);
@@ -217,15 +216,14 @@ describe("tools against a real server", () => {
     const result = await SshExecTool.execute(
       "1",
       { command: "echo from-the-tool; exit 7", profile: "live" },
-      signal,
-    );
+      signal, undefined, allow);
     assert.strictEqual(result.details.exitCode, 7);
     assert.match(result.content[0].text, /from-the-tool/);
   });
 
   it("ssh_exec rejects an empty command", async () => {
     await assert.rejects(
-      () => SshExecTool.execute("1", { command: "   ", profile: "live" }, signal),
+      () => SshExecTool.execute("1", { command: "   ", profile: "live" }, signal, undefined, allow),
       /must not be empty/,
     );
   });
@@ -241,19 +239,17 @@ describe("tools against a real server", () => {
     const uploaded = await SshUploadTool.execute(
       "1",
       { localPath: local, remotePath: remote, profile: "live" },
-      signal,
-    );
+      signal, undefined, allow);
     assert.strictEqual(uploaded.details.size, 15);
 
-    const listed = await SshListTool.execute("1", { path: server.dir, profile: "live" }, signal);
+    const listed = await SshListTool.execute("1", { path: server.dir, profile: "live" }, signal, undefined, allow);
     assert.ok(listed.details.count > 0);
     assert.match(listed.content[0].text, /payload\.txt/);
 
     await SshDownloadTool.execute(
       "1",
       { remotePath: remote, localPath: back, profile: "live" },
-      signal,
-    );
+      signal, undefined, allow);
     assert.strictEqual(fs.readFileSync(back, "utf-8"), "tool round trip");
   });
 
@@ -267,8 +263,7 @@ describe("tools against a real server", () => {
         keyPath: path.join(testHome, "keys", "via_tool"),
         authorizedKeysPath: server.authorizedKeysPath,
       },
-      signal,
-    );
+      signal, undefined, allow);
 
     assert.strictEqual(result.details.installed, true);
     assert.strictEqual(result.details.verified, true);
@@ -289,8 +284,24 @@ describe("tools against a real server", () => {
     });
 
     await assert.rejects(
-      () => SshExecTool.execute("1", { command: "true", profile: "fresh" }, signal),
-      /not in .*empty_known_hosts/s,
+      () => SshExecTool.execute("1", { command: "true", profile: "fresh" }, signal, undefined, reject),
+      /denied by the user/,
     );
+    assert.ok(!fs.existsSync(path.join(testHome, "empty_known_hosts")));
+
+    // Without a UI nothing is trusted either, and acceptNewHostKey alone is ignored.
+    await assert.rejects(
+      () => SshExecTool.execute("1", { command: "true", profile: "fresh", acceptNewHostKey: true }, signal),
+      /no interactive UI/,
+    );
+    await assert.rejects(
+      () => SshListTool.execute("1", { path: ".", profile: "fresh", acceptNewHostKey: true }, signal),
+      /no interactive UI/,
+    );
+
+    // The human approving the prompt records the key and the call proceeds.
+    const result = await SshExecTool.execute("1", { command: "true", profile: "fresh" }, signal, undefined, allow);
+    assert.strictEqual(result.details.exitCode, 0);
+    assert.ok(fs.readFileSync(path.join(testHome, "empty_known_hosts"), "utf-8").length > 0);
   });
 });
