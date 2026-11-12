@@ -77,7 +77,7 @@ describe("Extension entry point", () => {
     } as any);
 
     assert.deepStrictEqual(registered.sort(), allTools.map((t) => t.name).sort());
-    assert.deepStrictEqual(commands.sort(), ["ssh", "ssh-key"]);
+    assert.deepStrictEqual(commands.sort(), ["jms", "ssh", "ssh-key"]);
   });
 
   it("closes tunnels when the session ends, so nothing outlives pi", async () => {

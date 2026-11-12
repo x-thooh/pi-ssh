@@ -412,6 +412,13 @@ export function hasJumpSession(name: string): boolean {
   return sessions.get(name)?.alive ?? false;
 }
 
+export function closeJumpSession(name: string): boolean {
+  const session = sessions.get(name);
+  if (!session) return false;
+  session.close();
+  return true;
+}
+
 export function closeAllJumpSessions(): void {
   for (const session of [...sessions.values()]) session.close();
   sessions.clear();

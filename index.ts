@@ -30,7 +30,7 @@
 
 import type { ExtensionAPI } from "@earendil-works/pi-coding-agent";
 
-import { loadConfig, getConfig } from "./src/config.ts";
+import { loadConfig, getConfig, getProfiles } from "./src/config.ts";
 import { SshSetupTool } from "./src/tools/ssh-setup.ts";
 import { SshStatusTool } from "./src/tools/ssh-status.ts";
 import { SshProfileTool } from "./src/tools/ssh-profile.ts";
@@ -43,7 +43,8 @@ import { SshAuthorizeTool } from "./src/tools/ssh-authorize.ts";
 import { SshDoctorTool } from "./src/tools/ssh-doctor.ts";
 import { SshTunnelTool } from "./src/tools/ssh-tunnel.ts";
 import { listTunnels, onTunnelsChanged, stopAllTunnels } from "./src/tunnels.ts";
-import { closeAllJumpSessions } from "./src/jumpserver.ts";
+import { closeAllJumpSessions, closeJumpSession, hasJumpSession } from "./src/jumpserver.ts";
+import { createJmsHandler } from "./src/jms-command.ts";
 import { createTunnelIndicator } from "./src/ui.ts";
 
 export default function (pi: ExtensionAPI) {
@@ -100,6 +101,32 @@ export default function (pi: ExtensionAPI) {
         { deliverAs: "steer" },
       );
       ctx.ui.notify("Running on the remote host...", "info");
+    },
+  });
+
+  // Like /ssh, but for JumpServer profiles: /jms [<profile>] <command>
+  let jmsCtx: { ui: { notify(m: string, l?: string): void } } | null = null;
+  const jms = createJmsHandler({
+    profiles: getProfiles,
+    hasSession: hasJumpSession,
+    closeSession: closeJumpSession,
+    closeAll: closeAllJumpSessions,
+    send: (message) => pi.sendUserMessage(message, { deliverAs: "steer" }),
+    notify: (message, level) => jmsCtx?.ui.notify(message, level),
+  });
+  pi.registerCommand("jms", {
+    description: "Run a command on a JumpServer profile (/jms [profile] <command>, list, use, close)",
+    getArgumentCompletions: (prefix: string) => {
+      const names = Object.entries(getProfiles())
+        .filter(([, p]) => p.jump?.type === "jumpserver")
+        .map(([n]) => n);
+      const words = ["list", "use", "close", ...names];
+      const items = words.filter((w) => w.startsWith(prefix)).map((w) => ({ value: w, label: w }));
+      return items.length > 0 ? items : null;
+    },
+    handler: async (args, ctx) => {
+      jmsCtx = ctx as never;
+      jms(args);
     },
   });
 
