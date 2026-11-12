@@ -1,6 +1,6 @@
 {
   "name": "@xthooh/pi-ssh",
-  "version": "1.3.2",
+  "version": "1.4.0",
   "description": "SSH client extension for the pi coding agent. Run commands, transfer files over SFTP, and set up key-based login on remote hosts.",
   "keywords": [
     "pi-package",
