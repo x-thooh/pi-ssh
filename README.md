@@ -324,6 +324,14 @@ While you are inside a server:
 
 The AI can read anything the login account can read, so a root profile exposes secrets in files like `.netrc` or `.bash_history`. The prompt tells it not to open credential files unless you ask; that is guidance, not enforcement. For production hosts set the profile's `policy.mode` to `confirm-all`.
 
+### Output size
+
+`ssh_exec` returns at most about 3.8 KB to the model. A longer result keeps its head and tail (whole lines, about 60/40), says how many lines and bytes were left out, and the **full output is saved** to `~/.pi/ssh-output/exec-<time>-<id>.txt` (mode 0600; only the newest 40 files from the last 24 hours are kept). The model reads the part it needs with `read` and `offset`/`limit`, or re-runs the command with `grep`, `head`, `tail` or `awk`.
+
+Why: context-mode replaces any tool result over 4096 bytes with a ~96 byte preview, so a plain `df -h` or `ls -al` used to reach the model as one line. Range reads are not replaced, so a saved file read in pieces arrives intact. `/jms !<command>` is not limited: it shows the full output to you.
+
+The saved file holds whatever the command printed, including anything sensitive. Delete the directory if that matters, or set `PI_SSH_OUTPUT_DIR` to somewhere else. `PI_SSH_OUTPUT_BYTES` changes the budget (minimum 512; raise it together with context-mode's `CTX_REPLACE_TRIGGER_BYTES` if you want longer inline results).
+
 ### Interactive terminal (`/jms shell <profile>`)
 
 The terminal is opened with its own login to the bastion, separate from the background session used by `/jms <command>`; it is never registered for reuse and is closed when you leave. The model has no tool for this and server mode does not use it: only you can start it, and your keystrokes are the confirmation, so nothing is asked and the command policy does not apply (it cannot, there is no command to classify). pi's audit log records that a shell was opened and how it ended (`jms_shell`); what you type is recorded by JumpServer itself.

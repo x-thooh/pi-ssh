@@ -6,7 +6,7 @@ import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { runCommandOnProfile } from "../clients/run.ts";
 import { JumpSession, openJumpSession } from "../jumpserver.ts";
-import { formatExecResult } from "../formatting/formatters.ts";
+import { formatExecForModel } from "../exec-output.ts";
 import { resolveProfile, getGlobalPolicy } from "../config.ts";
 import { classifyCommand, resolvePolicy } from "../policy.ts";
 import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
@@ -183,9 +183,10 @@ export const SshExecTool = {
     ctx?: GuardContext,
   ) {
     const { name, profile, note, result } = await runGuardedExec(params, signal, ctx);
+    const shown = formatExecForModel(result);
 
     return {
-      content: [{ type: "text" as const, text: withNote(formatExecResult(result), note) }],
+      content: [{ type: "text" as const, text: withNote(shown.text, note) }],
       details: {
         profile: name,
         host: profile.host,
@@ -193,6 +194,8 @@ export const SshExecTool = {
         signal: result.signal,
         durationMs: result.durationMs,
         truncated: result.truncated,
+        outputCut: shown.truncated,
+        outputFile: shown.file,
         stdoutBytes: result.stdout.length,
         stderrBytes: result.stderr.length,
       },

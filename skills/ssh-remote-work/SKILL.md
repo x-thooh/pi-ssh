@@ -112,3 +112,5 @@ failed, quote stderr rather than summarising it - the exact message is what
 they need. Say which host you ran it on.
 
 When the system prompt contains "Remote server mode", the user has entered a JumpServer host with `/jms <profile>`: do their requests there with ssh_exec and that profile, as that section describes. `/jms shell <profile>` opens an interactive terminal for the human only; never suggest running it yourself.
+
+ssh_exec cuts results over about 3.8 KB to head and tail; the note names the file holding the full output. Read that file with offset/limit rather than running the command again, and prefer narrow commands (grep, head, tail, df -x ...) and one command for several read-only checks.

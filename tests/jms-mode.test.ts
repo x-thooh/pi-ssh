@@ -7,6 +7,7 @@ import { startMockJumpServer, type MockServer } from "./mock-jumpserver.ts";
 import { closeAllJumpSessions } from "../src/jumpserver.ts";
 import * as config from "../src/config.ts";
 import { buildServerModePrompt } from "../src/jms-mode.ts";
+import { SshExecTool } from "../src/tools/ssh-exec.ts";
 
 const PASSWORD = "{{SECRET_4gh4lm24}}";
 
@@ -19,6 +20,11 @@ describe("buildServerModePrompt", () => {
     jump: { type: "jumpserver", asset: "10.0.0.5" },
   } as any);
 
+  it("tells the AI the output budget and how to stay under it", () => {
+    assert.match(p, /3\.8 KB/);
+    assert.match(p, /offset\/limit/);
+    assert.match(p, /ONE command/);
+  });
   it("names the profile, host and asset, and tells the AI to use ssh_exec with that profile", () => {
     assert.match(p, /profile "web" \(alice@jump\.example\.com:2222, JumpServer asset 10\.0\.0\.5\)/);
     assert.match(p, /ssh_exec and pass profile "web" every time/);
@@ -151,6 +157,33 @@ describe("/jms server mode through the extension", () => {
     assert.match(results[0].data.output, /raw-output/);
     assert.equal(results[0].data.exitCode, 0);
     assert.deepEqual(h.sent, [], "nothing was sent to the model");
+  });
+
+  it("ssh_exec returns a big result cut to the budget, with the whole thing in a file", async () => {
+    const outDir = path.join(home, "outputs");
+    process.env.PI_SSH_OUTPUT_DIR = outDir;
+    const big = path.join(home, "big.txt");
+    fs.writeFileSync(big, Array.from({ length: 400 }, (_, i) => `line-${String(i).padStart(3, "0")} ${"y".repeat(70)}`).join("\n") + "\n");
+    try {
+      const ctx: any = { hasUI: true, ui: { select: async () => undefined, confirm: async () => false } };
+      const r: any = await SshExecTool.execute("t", { command: `cat ${big}`, profile: "m" }, new AbortController().signal, undefined, ctx);
+      const text: string = r.content[0].text;
+      assert.ok(Buffer.byteLength(text) <= 3800, `${Buffer.byteLength(text)} bytes`);
+      assert.match(text, /line-000/);
+      assert.match(text, /line-399/);
+      assert.doesNotMatch(text, /line-200/);
+      assert.equal(r.details.outputCut, true);
+      assert.ok(r.details.outputFile.startsWith(outDir));
+      assert.match(fs.readFileSync(r.details.outputFile, "utf-8"), /line-200/, "the middle is in the file");
+      assert.equal(r.details.exitCode, 0);
+
+      const small: any = await SshExecTool.execute("t", { command: "echo ok", profile: "m" }, new AbortController().signal, undefined, ctx);
+      assert.equal(small.details.outputCut, false);
+      assert.equal(small.details.outputFile, null);
+      assert.match(small.content[0].text, /ok/);
+    } finally {
+      delete process.env.PI_SSH_OUTPUT_DIR;
+    }
   });
 
   it("exit removes the prompt and the fallback", async () => {
