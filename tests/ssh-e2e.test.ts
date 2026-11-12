@@ -43,7 +43,7 @@ function profileFor(overrides: Partial<SshProfile> = {}): SshProfile {
 
 before(async () => {
   server = await startTestServer();
-  workspace = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ssh-work-"));
+  workspace = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ssh-work-")));
   knownHosts = path.join(workspace, "known_hosts");
 });
 
