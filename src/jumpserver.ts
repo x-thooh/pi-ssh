@@ -23,7 +23,11 @@ import { resolvePassword } from "./credentials.ts";
 const DEFAULT_IDLE_MS = 300_000;
 const DEFAULT_LOGIN_TIMEOUT_MS = 30_000;
 const RESYNC_TIMEOUT_MS = 5_000;
-const TAIL_CHARS = 400;
+const TAIL_CHARS = 800;
+/** Screen must be idle this long after a step matches before we reply. */
+const STEP_QUIET_MS = 250;
+/** Re-send the shell init line this often while the target is still starting. */
+const INIT_RETRY_MS = 2_500;
 
 type JumpServerConfig = Extract<JumpConfig, { type: "jumpserver" }>;
 
@@ -101,6 +105,7 @@ export class JumpSession {
   private queue: Promise<unknown> = Promise.resolve();
   private idleTimer: NodeJS.Timeout | null = null;
   private closed = false;
+  private lastDataAt = 0;
   private readonly ready: Promise<void>;
 
   constructor(name: string, profile: SshProfile, options: JumpRunOptions) {
@@ -118,6 +123,7 @@ export class JumpSession {
   // -- low level IO --
 
   private onData(chunk: Buffer): void {
+    this.lastDataAt = Date.now();
     this.buf += chunk.toString("utf-8");
     this.waiter?.check();
   }
@@ -155,6 +161,22 @@ export class JumpSession {
   private tail(): string {
     const clean = redact(stripAnsi(this.buf), this.secrets);
     return clean.slice(-TAIL_CHARS);
+  }
+
+  /**
+   * Resolve once nothing has arrived for `quietMs`.
+   *
+   * WHY: Koko can print a prompt (e.g. `ID> `) before it has finished drawing
+   * the menu and only starts reading input afterwards, so a reply sent at the
+   * first match is swallowed. Waiting for the screen to settle avoids that.
+   */
+  private async quiet(quietMs: number, maxMs: number): Promise<void> {
+    const deadline = Date.now() + maxMs;
+    for (;;) {
+      const idle = Date.now() - this.lastDataAt;
+      if (idle >= quietMs || Date.now() >= deadline) return;
+      await new Promise((r) => setTimeout(r, Math.min(quietMs - idle, Math.max(deadline - Date.now(), 1))));
+    }
   }
 
   // -- login --
@@ -207,6 +229,7 @@ export class JumpSession {
             `JumpServer login timed out at step ${i + 1}/${steps.length} (waiting for /${step.expect}/). Last output:\n${this.tail()}`,
           ),
       );
+      await this.quiet(STEP_QUIET_MS, left());
       const reply = step.send.replace(/\{(asset|account|password)\}/g, (_m, key: string) => {
         const value = key === "asset" ? asset : key === "account" ? account : password;
         if (value === undefined) {
@@ -219,18 +242,32 @@ export class JumpSession {
       this.write(`${reply}\r`);
     }
 
+    // WHY: after the last menu step the bastion is still dialling the target
+    // (banner, MOTD), and input typed meanwhile is dropped. So re-send the init
+    // line until the sentinel comes back instead of trusting a single write.
     const ready = newToken();
-    this.write(
-      `stty -echo 2>/dev/null; export PS1= PS2= TERM=dumb; unset PROMPT_COMMAND; printf '\\n__PI_${ready}__%d\\n' $?\n`,
-    );
-    await this.wait(
-      () => findSentinel(stripAnsi(this.buf), ready) !== null,
-      left(),
-      () =>
-        new Error(
-          `JumpServer login: the target shell did not become ready (wrong asset/account or menu mismatch?). Last output:\n${this.tail()}`,
-        ),
-    );
+    const initLine = `stty -echo 2>/dev/null; export PS1= PS2= TERM=dumb; unset PROMPT_COMMAND; printf '\\n__PI_${ready}__%d\\n' $?\n`;
+    const notReady = () =>
+      new Error(
+        `JumpServer login: the target shell did not become ready (wrong asset/account or menu mismatch?). Last output:\n${this.tail()}`,
+      );
+    const retry = new Error("init retry");
+    for (;;) {
+      await this.quiet(STEP_QUIET_MS, left());
+      this.write(initLine);
+      try {
+        await this.wait(
+          () => findSentinel(stripAnsi(this.buf), ready) !== null,
+          Math.min(INIT_RETRY_MS, left()),
+          () => retry,
+        );
+        break;
+      } catch (err) {
+        if (err !== retry || Date.now() >= deadline) throw err === retry ? notReady() : err;
+      }
+    }
+    // Late echoes of earlier init attempts must not leak into the first command.
+    await this.quiet(300, 2_000);
     this.buf = "";
     this.touch();
   }

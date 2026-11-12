@@ -269,7 +269,18 @@ A profile can reach its host through a JumpServer (Koko) bastion, or by hopping 
 }
 ```
 
-**JumpServer.** After SSH login to the bastion (its host key is checked against known_hosts as usual) pi answers the menu like an `expect` script: `Opt>` -> `p`, `[Host]>` -> asset, `ID>` -> account (default `1`). A `(yes/no)` prompt is answered with `yes`. Override the script for other versions with `jump.steps`: `[{ "expect": "regex", "send": "text with {asset} {account} {password}", "secret": true }]`. Login times out after 30s and the error shows the last 400 characters of sanitized output (password redacted). `idleTimeoutMs` (default 300000) closes an unused session; sessions also close when pi shuts down.
+**JumpServer.** After SSH login to the bastion (its host key is checked against known_hosts as usual) pi answers the menu like an `expect` script: `Opt>` -> `p`, `[Host]>` -> asset, `ID>` -> account (default `1`). A `(yes/no)` prompt is answered with `yes`. Override the script for other versions with `jump.steps`: `[{ "expect": "regex", "send": "text with {asset} {account} {password}", "secret": true }]`. Some assets show a protocol menu (`ssh`/`telnet`) before the account menu, and both prompt `ID>`. Pin each one with its own step:
+
+```json
+"steps": [
+  { "expect": "Opt>", "send": "p" },
+  { "expect": "\\[Host\\]>", "send": "{asset}" },
+  { "expect": "协议ID[\\s\\S]*ID>", "send": "1" },
+  { "expect": "账号ID[\\s\\S]*ID>", "send": "{account}" }
+]
+```
+
+Use a hostname/IP search string as `asset` (menu row numbers are per page and change); it must match exactly one asset. After each match pi waits for the screen to go quiet before answering, and re-sends its shell init line until the target shell (still printing its MOTD) answers. Login times out after 30s and the error shows the last 800 characters of sanitized output (password redacted). `idleTimeoutMs` (default 300000) closes an unused session; sessions also close when pi shuts down.
 
 **Passwords.** `passwordCmd` (run via `/bin/sh -c`, 10s timeout, trimmed stdout) beats `passwordEnv` (environment variable name), which beats `password`. They are resolved at connect time only and never stored, printed or logged. Profiles with a `jump` of type `jumpserver` are never auto-upgraded to key login.
 

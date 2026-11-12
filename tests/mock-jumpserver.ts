@@ -29,6 +29,10 @@ interface Options {
   readonly password: string;
   readonly asset?: string;
   readonly account?: string;
+  /** Print `ID> ` early and ignore input until the account menu is fully drawn (like Koko). */
+  readonly slowAccountMenu?: boolean;
+  /** Drop input for this long after the account is chosen (target still dialling). */
+  readonly shellStartDelayMs?: number;
 }
 
 function listen(server: InstanceType<typeof Server>): Promise<number> {
@@ -103,7 +107,7 @@ export async function startMockJumpServer(options: Options): Promise<MockServer>
     session.on("pty", (accept: () => void) => accept());
     session.on("shell", (accept: () => any) => {
       const stream = accept();
-      let state: "opt" | "host" | "id" | "sh" = "opt";
+      let state: "opt" | "host" | "pending" | "id" | "booting" | "sh" = "opt";
       let line = "";
       let sh: ChildProcess | null = null;
       stream.write("Welcome to Mock JumpServer\r\n  p) list hosts\r\nOpt> ");
@@ -135,18 +139,32 @@ export async function startMockJumpServer(options: Options): Promise<MockServer>
           const input = line.trim();
           line = "";
           if (!input) continue;
+          if (state === "pending" || state === "booting") continue;
           if (state === "opt") {
             if (input === "p") {
               state = "host";
               stream.write(`\x1b[1m1 ${asset}\x1b[0m\r\n[Host]> `);
             } else stream.write("Opt> ");
           } else if (state === "host") {
-            if (input === asset) {
+            if (input === asset && options.slowAccountMenu) {
+              state = "pending"; // input is discarded until the menu is drawn
+              stream.write("ID> ");
+              setTimeout(() => {
+                state = "id";
+                stream.write("1 root\r\nID> ");
+              }, 120);
+            } else if (input === asset) {
               state = "id";
               stream.write("1 root\r\nID> ");
             } else stream.write("not found\r\n[Host]> ");
           } else if (state === "id") {
-            if (input === account) {
+            if (input === account && options.shellStartDelayMs) {
+              state = "booting"; // input is dropped until the target shell is up
+              setTimeout(() => {
+                state = "sh";
+                startShell();
+              }, options.shellStartDelayMs);
+            } else if (input === account) {
               state = "sh";
               startShell();
             } else stream.write("bad id\r\nID> ");

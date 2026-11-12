@@ -67,6 +67,30 @@ describe("JumpServer sessions", () => {
     assert.equal(bad.code, 3);
   });
 
+  it("waits for a slowly drawn account menu before answering ID>", async () => {
+    const slow = await startMockJumpServer({ password: PASSWORD, slowAccountMenu: true });
+    try {
+      const r = await runCommandOnProfile("j-slow", jumpProfile(slow.port), "echo hi", {});
+      assert.equal(r.stdout, "hi\n");
+      assert.equal(r.code, 0);
+    } finally {
+      closeAllJumpSessions();
+      await slow.close();
+    }
+  });
+
+  it("re-sends the shell init until a slow target shell is up, without leaking sentinels", async () => {
+    const slow = await startMockJumpServer({ password: PASSWORD, shellStartDelayMs: 1200 });
+    try {
+      const r = await runCommandOnProfile("j-boot", jumpProfile(slow.port), "echo hi", {});
+      assert.equal(r.stdout, "hi\n");
+      assert.equal(r.code, 0);
+    } finally {
+      closeAllJumpSessions();
+      await slow.close();
+    }
+  });
+
   it("merges stderr into stdout", async () => {
     const r = await runCommandOnProfile("j-err", jumpProfile(server.port), "echo out; echo err 1>&2", {});
     assert.equal(r.stdout, "out\nerr\n");
