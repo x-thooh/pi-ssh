@@ -46,7 +46,8 @@ import { listTunnels, onTunnelsChanged, stopAllTunnels } from "./src/tunnels.ts"
 import { closeAllJumpSessions, closeJumpSession, hasJumpSession } from "./src/jumpserver.ts";
 import { createJmsHandler } from "./src/jms-command.ts";
 import { renderJmsResult } from "./src/jms-render.ts";
-import { openGuardedSession, runGuardedExec } from "./src/tools/ssh-exec.ts";
+import { openGuardedSession, openGuardedShell, runGuardedExec } from "./src/tools/ssh-exec.ts";
+import { RESET_TERMINAL, pumpShell } from "./src/jms-shell.ts";
 
 const JMS_ENTRY = "jms-result";
 import { createTunnelIndicator } from "./src/ui.ts";
@@ -124,6 +125,47 @@ export default function (pi: ExtensionAPI) {
       );
       return { reused };
     },
+    shell: async (profile) => {
+      const ctx = cmdCtx;
+      if (ctx?.mode !== "tui") {
+        throw new Error(
+          "An interactive shell needs the pi terminal UI. Use /jms connect <profile> or /jms <profile> <command> here.",
+        );
+      }
+      const sh = await openGuardedShell(
+        { profile, cols: process.stdout.columns || 80, rows: process.stdout.rows || 24 },
+        ctx.signal ?? new AbortController().signal,
+        ctx,
+      );
+      let reason = "error";
+      try {
+        // WHY: ui.custom hands us the TUI. Stopping it releases the terminal,
+        // then stdin/stdout are wired straight to the remote channel until it
+        // ends; restarting redraws pi. Same technique as pi's interactive-shell example.
+        reason = await ctx.ui.custom<string>((tui: any, _theme: unknown, _kb: unknown, done: (r: string) => void) => {
+          tui.stop();
+          process.stdout.write("\x1b[2J\x1b[H");
+          if (sh.buffered) process.stdout.write(sh.buffered);
+          process.stdin.setRawMode?.(true);
+          process.stdin.resume();
+          pumpShell(sh.stream as any, { input: process.stdin, output: process.stdout })
+            .catch(() => "remote-exit" as const)
+            .then((r) => {
+              process.stdin.setRawMode?.(false);
+              process.stdin.pause();
+              process.stdout.write(`${RESET_TERMINAL}\x1b[2J\x1b[H`);
+              tui.start();
+              tui.requestRender(true);
+              done(r);
+            });
+          return { render: () => [], invalidate: () => {} };
+        });
+      } finally {
+        sh.close();
+        sh.ended(reason);
+      }
+      return { reason };
+    },
     run: async (profile, command) => {
       const { result } = await runGuardedExec(
         { profile, command },
@@ -152,12 +194,12 @@ export default function (pi: ExtensionAPI) {
     invalidate: () => {},
   }));
   pi.registerCommand("jms", {
-    description: "Run a command on a JumpServer profile and show its output (/jms <profile> to enter, /jms [profile] <command>, list, use, share, close)",
+    description: "Run a command on a JumpServer profile and show its output (/jms <profile> enters an interactive terminal; /jms [profile] <command> runs one; connect, list, use, share, close)",
     getArgumentCompletions: (prefix: string) => {
       const names = Object.entries(getProfiles())
         .filter(([, p]) => p.jump?.type === "jumpserver")
         .map(([n]) => n);
-      const words = ["list", "use", "share", "close", ...names];
+      const words = ["list", "connect", "use", "share", "close", ...names];
       const items = words.filter((w) => w.startsWith(prefix)).map((w) => ({ value: w, label: w }));
       return items.length > 0 ? items : null;
     },

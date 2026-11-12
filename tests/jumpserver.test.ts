@@ -4,7 +4,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { startMockJumpServer, startMockSshd, type MockServer } from "./mock-jumpserver.ts";
-import { closeAllJumpSessions, findSentinel, hasJumpSession, openJumpSession, redact, stripAnsi } from "../src/jumpserver.ts";
+import { JumpSession, closeAllJumpSessions, findSentinel, hasJumpSession, openJumpSession, redact, stripAnsi } from "../src/jumpserver.ts";
 import { runCommandOnProfile } from "../src/clients/run.ts";
 import { formatExecResult, formatProfileStatus } from "../src/formatting/formatters.ts";
 import { needsKeyUpgrade } from "../src/auto-key.ts";
@@ -102,6 +102,31 @@ describe("JumpServer sessions", () => {
     const r = await runCommandOnProfile("j-enter", p, "echo inside", {});
     assert.equal(r.stdout, "inside\n");
     assert.equal(server.logins() - before, 1, "entering and running share one login");
+  });
+
+  it("interactive mode passes the menu, then hands over the raw channel without typing into it", async () => {
+    const p = jumpProfile(server.port);
+    const session = new JumpSession("j-shell", p, { interactive: { cols: 100, rows: 30 } });
+    await session.whenReady();
+    const { stream, buffered } = session.detach();
+    // The human types; our code must not have sent shell init or sentinels.
+    let seen = buffered;
+    stream.on("data", (d: Buffer) => (seen += d.toString()));
+    stream.write("echo typed-by-human\n");
+    for (let i = 0; i < 40 && !seen.includes("typed-by-human"); i++) await new Promise((r) => setTimeout(r, 50));
+    assert.match(seen, /typed-by-human/);
+    assert.doesNotMatch(seen, /__PI_|stty -echo|PS1=/);
+    assert.equal(hasJumpSession("j-shell"), false, "an interactive session is never registered for reuse");
+    session.close();
+  });
+
+  it("interactive mode surfaces a wrong password without leaking it", async () => {
+    const bad = { ...jumpProfile(server.port), password: "wrong-pw-123" };
+    const session = new JumpSession("j-shell-bad", bad, { interactive: { cols: 80, rows: 24 } });
+    await assert.rejects(
+      () => session.whenReady(),
+      (e: Error) => !e.message.includes("wrong-pw-123"),
+    );
   });
 
   it("a failed open leaves no session behind", async () => {

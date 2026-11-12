@@ -5,7 +5,7 @@
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { runCommandOnProfile } from "../clients/run.ts";
-import { openJumpSession } from "../jumpserver.ts";
+import { JumpSession, openJumpSession } from "../jumpserver.ts";
 import { formatExecResult } from "../formatting/formatters.ts";
 import { resolveProfile, getGlobalPolicy } from "../config.ts";
 import { classifyCommand, resolvePolicy } from "../policy.ts";
@@ -100,6 +100,54 @@ export async function openGuardedSession(
     });
     return { name: c.name, profile: c.profile, reused };
   });
+}
+
+/**
+ * Log in to a JumpServer profile for a human to type into. The model never
+ * gets this: it is only reachable from the /jms command, and the human's own
+ * keystrokes are the confirmation. What they type is recorded by JumpServer,
+ * not here; the audit log only notes that a shell was opened and how it ended.
+ */
+export async function openGuardedShell(
+  params: { profile?: string; cols: number; rows: number },
+  signal: AbortSignal,
+  ctx?: GuardContext,
+) {
+  const resolved = resolveProfile(params.profile);
+  if (resolved.profile.jump?.type !== "jumpserver") {
+    throw new Error(`"${resolved.name}" is not a JumpServer profile.`);
+  }
+  const asset = (resolved.profile.jump as { asset?: string }).asset ?? "(unset)";
+  const { id } = await guard(ctx, {
+    tool: "jms_shell",
+    profile: resolved.name,
+    target: `interactive shell ${resolved.profile.user}@${resolved.profile.host}:${resolved.profile.port} asset=${asset}`,
+    verdict: "auto",
+    message: "",
+  });
+  const { name, session } = await withHostKeyApproval(
+    ctx,
+    { name: resolved.name, ...resolved.profile },
+    async (accept) => {
+      const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+      const session = new JumpSession(c.name, c.profile, {
+        signal,
+        acceptNewHostKey: accept,
+        interactive: { cols: params.cols, rows: params.rows },
+      });
+      await session.whenReady();
+      return { name: c.name, session };
+    },
+  );
+  const { stream, buffered } = session.detach();
+  return {
+    id,
+    name,
+    stream,
+    buffered,
+    close: () => session.close(),
+    ended: (reason: string) => audit({ id, profile: name, tool: "jms_shell", target: `ended: ${reason}` }),
+  };
 }
 
 export const SshExecTool = {

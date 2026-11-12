@@ -110,3 +110,5 @@ keeps running until stopped, its time limit expires, or the session ends.
 Give the user the command's actual output and its exit code. When a command
 failed, quote stderr rather than summarising it - the exact message is what
 they need. Say which host you ran it on.
+
+`/jms <profile>` opens an interactive terminal for the human only. It is not available to you as a tool: never suggest running it yourself, and for commands use ssh_exec.

@@ -3,7 +3,8 @@
  *
  *   /jms                          list JumpServer profiles and session state
  *   /jms use <profile>            remember a default profile for this session
- *   /jms <profile>                log in and stay there, running nothing
+ *   /jms <profile>                enter the server: an interactive terminal (vim, top, ...)
+ *   /jms connect <profile>        log in in the background, running nothing
  *   /jms <profile> <command>      run a command on that profile
  *   /jms <command>                run it on the default profile
  *   /jms share                    send the last result to the model
@@ -23,11 +24,12 @@ export type JmsAction =
   | { kind: "use"; profile: string }
   | { kind: "close"; profile?: string }
   | { kind: "share" }
-  | { kind: "enter"; profile: string }
+  | { kind: "shell"; profile: string }
+  | { kind: "connect"; profile: string }
   | { kind: "run"; profile: string; command: string }
   | { kind: "error"; message: string };
 
-const USAGE = "Usage: /jms [list] | <profile> | use <profile> | share | close [profile] | [<profile>] <command>";
+const USAGE = "Usage: /jms [list] | <profile> | connect <profile> | use <profile> | share | close [profile] | [<profile>] <command>";
 
 /** Pure: turn the raw argument string into an action. */
 export function parseJmsArgs(
@@ -53,6 +55,12 @@ export function parseJmsArgs(
       ? { kind: "use", profile: rest }
       : { kind: "error", message: `"${rest}" is not a JumpServer profile.${available}` };
   }
+  if (head === "connect") {
+    if (!rest) return { kind: "error", message: `${USAGE}${available}` };
+    return known(rest)
+      ? { kind: "connect", profile: rest }
+      : { kind: "error", message: `"${rest}" is not a JumpServer profile.${available}` };
+  }
   if (head === "close") {
     if (!rest) return { kind: "close" };
     return known(rest)
@@ -65,7 +73,7 @@ export function parseJmsArgs(
   }
 
   if (known(head)) {
-    if (restWords.length === 0) return { kind: "enter", profile: head };
+    if (restWords.length === 0) return { kind: "shell", profile: head };
     return { kind: "run", profile: head, command: rest };
   }
 
@@ -90,6 +98,8 @@ export interface JmsDeps {
   closeAll(): void;
   /** Log in and keep the session open without running anything. */
   connect(profile: string): Promise<{ reused: boolean }>;
+  /** Give the human an interactive terminal on the profile; resolves when they leave. */
+  shell(profile: string): Promise<{ reason: string }>;
   /** Run through the guarded exec path; rejects when denied or failed. */
   run(profile: string, command: string): Promise<JmsOutcome>;
   /** Put a result in the transcript without sending it to the model. */
@@ -159,7 +169,7 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void>
         return;
       }
 
-      case "enter": {
+      case "connect": {
         if (running) {
           deps.notify("A /jms command is still running.", "error");
           return;
@@ -180,6 +190,28 @@ export function createJmsHandler(deps: JmsDeps): (args: string) => Promise<void>
           );
         } catch (err) {
           deps.notify(`Could not connect to ${action.profile}: ${humanError(err)}`, "error");
+        } finally {
+          running = false;
+        }
+        return;
+      }
+
+      case "shell": {
+        if (running) {
+          deps.notify("A /jms command is still running.", "error");
+          return;
+        }
+        running = true;
+        deps.notify(`Entering ${action.profile}... (Ctrl-] leaves, exit ends the shell)`, "info");
+        try {
+          const { reason } = await deps.shell(action.profile);
+          defaultName = action.profile; // an explicit choice of machine, like /jms use
+          deps.notify(
+            `Left ${action.profile} (${reason}). /jms <command> runs commands there; /jms ${action.profile} enters again.`,
+            "info",
+          );
+        } catch (err) {
+          deps.notify(`Could not enter ${action.profile}: ${humanError(err)}`, "error");
         } finally {
           running = false;
         }

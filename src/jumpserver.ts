@@ -91,6 +91,11 @@ export interface JumpRunOptions {
   readonly acceptNewHostKey?: boolean;
   /** Overall login timeout; default 30s. */
   readonly loginTimeoutMs?: number;
+  /**
+   * Hand the shell to a human instead of driving it: real PTY, no shell init
+   * and no sentinel protocol. Pair with detach().
+   */
+  readonly interactive?: { readonly cols: number; readonly rows: number; readonly term?: string };
 }
 
 export class JumpSession {
@@ -99,6 +104,7 @@ export class JumpSession {
   private readonly config: JumpServerConfig;
   private conn: Connection | null = null;
   private stream: NodeJS.ReadWriteStream | null = null;
+  private dataListener: ((c: Buffer) => void) | null = null;
   private buf = "";
   private waiter: Waiter | null = null;
   private secrets: string[] = [];
@@ -118,6 +124,21 @@ export class JumpSession {
 
   get alive(): boolean {
     return !this.closed;
+  }
+
+  /**
+   * Give the raw channel to the caller (interactive mode only). Whatever the
+   * target printed since the last menu answer is returned so nothing is lost.
+   * The session no longer reads, times out or closes the channel on its own;
+   * call close() when done.
+   */
+  detach(): { stream: NodeJS.ReadWriteStream; buffered: string } {
+    if (!this.stream || !this.dataListener) throw new Error("JumpServer session is not open.");
+    this.stream.removeListener("data", this.dataListener);
+    this.dataListener = null;
+    const buffered = this.buf;
+    this.buf = "";
+    return { stream: this.stream, buffered };
   }
 
   /** Resolves once the menu is passed and the target shell answers; rejects if login fails. */
@@ -203,9 +224,13 @@ export class JumpSession {
     client.on("error", () => this.close());
 
     this.stream = await new Promise<NodeJS.ReadWriteStream>((resolve, reject) => {
-      client.shell({ term: "dumb" }, (err, stream) => (err ? reject(err) : resolve(stream)));
+      const window = options.interactive
+        ? { term: options.interactive.term ?? "xterm-256color", cols: options.interactive.cols, rows: options.interactive.rows }
+        : { term: "dumb" };
+      client.shell(window, (err, stream) => (err ? reject(err) : resolve(stream)));
     });
-    this.stream.on("data", (c: Buffer) => this.onData(c));
+    this.dataListener = (c: Buffer) => this.onData(c);
+    this.stream.on("data", this.dataListener);
     this.stream.on("close", () => {
       this.waiter?.fail(new Error(`JumpServer closed the session. Last output:\n${this.tail()}`));
       this.close();
@@ -246,6 +271,11 @@ export class JumpSession {
       this.buf = "";
       this.write(`${reply}\r`);
     }
+
+    // WHY: a human takes over right after the last menu answer. Running our
+    // shell init here would type into their session, and waiting for a sentinel
+    // would never end because nothing is parsing the stream any more.
+    if (options.interactive) return;
 
     // WHY: after the last menu step the bastion is still dialling the target
     // (banner, MOTD), and input typed meanwhile is dropped. So re-send the init

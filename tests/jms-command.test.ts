@@ -14,8 +14,9 @@ describe("parseJmsArgs", () => {
     ["close", null, { kind: "close" }],
     ["share", null, { kind: "share" }],
     ["close s-fin-test", null, { kind: "close", profile: "s-fin-test" }],
-    ["s-fin-test", null, { kind: "enter", profile: "s-fin-test" }],
-    ["  s  ", null, { kind: "enter", profile: "s" }],
+    ["s-fin-test", null, { kind: "shell", profile: "s-fin-test" }],
+    ["  s  ", null, { kind: "shell", profile: "s" }],
+    ["connect s-fin-test", null, { kind: "connect", profile: "s-fin-test" }],
     ["s-fin-test hostname", null, { kind: "run", profile: "s-fin-test", command: "hostname" }],
     ["s-fin-test  ls -la /etc | head", null, { kind: "run", profile: "s-fin-test", command: "ls -la /etc | head" }],
     ["hostname", "s", { kind: "run", profile: "s", command: "hostname" }],
@@ -33,6 +34,8 @@ describe("parseJmsArgs", () => {
   it("rejects unknown profiles for use/close and missing commands", () => {
     assert.equal(parseJmsArgs("use nope", NAMES, null).kind, "error");
     assert.equal(parseJmsArgs("use", NAMES, null).kind, "error");
+    assert.equal(parseJmsArgs("connect", NAMES, null).kind, "error");
+    assert.equal(parseJmsArgs("connect nope", NAMES, null).kind, "error");
     assert.equal(parseJmsArgs("close nope", NAMES, null).kind, "error");
   });
 
@@ -52,12 +55,19 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
   const ran: string[] = [];
   const open = new Set<string>(["s"]);
   const connected: string[] = [];
+  const shells: string[] = [];
+  let shellError: Error | null = null;
   let connectError: Error | null = null;
   const handler = createJmsHandler({
     profiles: () => profiles,
     hasSession: (n) => open.has(n),
     closeSession: (n) => open.delete(n),
     closeAll: () => open.clear(),
+    shell: async (p) => {
+      if (shellError) throw shellError;
+      shells.push(p);
+      return { reason: "remote-exit" };
+    },
     connect: async (p) => {
       if (connectError) throw connectError;
       connected.push(p);
@@ -71,7 +81,7 @@ function setup(profiles: Record<string, SshProfile>, run?: (p: string, c: string
     share: (t) => shared.push(t),
     notify: (m) => notes.push(m),
   });
-  return { handler, shown, shared, notes, ran, open, connected, failConnect: (e: Error) => (connectError = e) };
+  return { handler, shown, shared, notes, ran, open, connected, shells, failShell: (e: Error) => (shellError = e), failConnect: (e: Error) => (connectError = e) };
 }
 
 const jms = (asset?: string): SshProfile => ({
@@ -146,39 +156,63 @@ describe("/jms handler", () => {
     assert.match(notes[0], /not a JumpServer profile/);
   });
 
-  it("a bare profile name enters the server: logs in, runs nothing, becomes the default", async () => {
-    const { handler, connected, ran, shown, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
+  it("a bare profile name enters an interactive terminal and becomes the default", async () => {
+    const { handler, shells, connected, ran, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
     await handler("s-fin-test");
-    assert.deepEqual(connected, ["s-fin-test"]);
+    assert.deepEqual(shells, ["s-fin-test"]);
+    assert.equal(connected.length, 0);
     assert.equal(ran.length, 0);
-    assert.equal(shown.length, 0);
-    assert.match(notes.at(-1)!, /Connected to s-fin-test .*asset=1\.2\.3\.4\)\. No command was run/);
-    await handler("uptime"); // default now set by entering
+    assert.match(notes.at(-1)!, /Left s-fin-test \(remote-exit\)/);
+    await handler("uptime");
     assert.deepEqual(ran, ["s-fin-test:uptime"]);
   });
 
-  it("entering twice reports the session as reused", async () => {
+  it("a shell that could not start is reported and does not become the default", async () => {
+    const { handler, failShell, ran, notes } = setup({ s: jms("a"), t: jms("b") });
+    failShell(new Error("needs the pi terminal UI"));
+    await handler("t");
+    assert.match(notes.at(-1)!, /Could not enter t: needs the pi terminal UI/);
+    await handler("hostname");
+    assert.equal(ran.length, 0);
+    assert.match(notes.at(-1)!, /No default profile/);
+  });
+
+  it("connect logs in in the background, runs nothing, and becomes the default", async () => {
+    const { handler, connected, shells, ran, shown, notes } = setup({ s: jms("a"), "s-fin-test": jms("1.2.3.4") });
+    await handler("connect s-fin-test");
+    assert.deepEqual(connected, ["s-fin-test"]);
+    assert.equal(shells.length, 0);
+    assert.equal(ran.length, 0);
+    assert.equal(shown.length, 0);
+    assert.match(notes.at(-1)!, /Connected to s-fin-test .*asset=1\.2\.3\.4\)\. No command was run/);
+    await handler("uptime");
+    assert.deepEqual(ran, ["s-fin-test:uptime"]);
+  });
+
+  it("connecting twice reports the session as reused", async () => {
     const { handler, notes } = setup({ s: jms("a") });
-    await handler("s");
-    await handler("s");
+    await handler("connect s");
+    await handler("connect s");
     assert.match(notes.at(-1)!, /Already connected to s/);
   });
 
-  it("a failed login is reported and does not become the default", async () => {
+  it("a failed connect is reported and does not become the default", async () => {
     const { handler, failConnect, ran, notes } = setup({ s: jms("a"), t: jms("b") });
     failConnect(new Error("JumpServer login timed out at step 2/4"));
-    await handler("t");
+    await handler("connect t");
     assert.match(notes.at(-1)!, /Could not connect to t: JumpServer login timed out/);
     await handler("hostname");
     assert.equal(ran.length, 0);
     assert.match(notes.at(-1)!, /No default profile/);
   });
 
-  it("entering a non-JumpServer profile is refused", async () => {
-    const { handler, connected, notes } = setup({ direct, s: jms("a") });
+  it("entering or connecting a non-JumpServer profile is refused", async () => {
+    const { handler, connected, shells, notes } = setup({ direct, s: jms("a") });
     await handler("direct");
-    assert.equal(connected.length, 0);
+    await handler("connect direct");
+    assert.equal(connected.length + shells.length, 0);
     assert.match(notes[0], /not a JumpServer profile/);
+    assert.match(notes[1], /not a JumpServer profile/);
   });
 
   it("share sends the last result to the model, and only then", async () => {

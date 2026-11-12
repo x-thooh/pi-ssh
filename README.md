@@ -300,9 +300,10 @@ Use a hostname/IP search string as `asset` (menu row numbers are per page and ch
 | `/ssh <command>` | Run a command on the active host. |
 | `/ssh-key` | Set up passwordless login for the active host. |
 | `/jms` | List JumpServer profiles, their asset and whether a session is open. |
-| `/jms <profile>` | Log in and stay there, running nothing. Makes it the default, so the next `/jms <command>` runs on it. Logging in shows no confirmation (it changes nothing on the server) but a new host key still needs your approval, and it is audited as `jms_connect`. |
+| `/jms <profile>` | **Enter the server**: pi's UI steps aside and you get a real interactive terminal on the profile (`vim`, `top`, `less`, tab completion, Ctrl-C all work). `exit` ends the shell; **Ctrl-]** leaves immediately. pi comes back where you left it. Needs the pi terminal UI. |
+| `/jms connect <profile>` | Log in in the background and run nothing; later `/jms <command>` calls reuse that session. |
 | `/jms <profile> <command>` | Run a command on a JumpServer profile and show the raw output in the transcript. |
-| `/jms use <profile>` | Set the default profile, so `/jms <command>` works without a name. Only this sets a default; a run never does, so a mistyped name cannot reach the wrong server. |
+| `/jms use <profile>` | Set the default profile, so `/jms <command>` works without a name. Only `use`, entering and `connect` set a default; running a command never does, so a mistyped name cannot reach the wrong server. |
 | `/jms share` | Send the last result to the model (it is otherwise kept out of the context). |
 | `/jms close [profile]` | Close one or all open JumpServer sessions. |
 
@@ -410,3 +411,9 @@ The suite runs end-to-end against a real OpenSSH server: it starts `sshd` on a l
 ## License
 
 MIT
+
+### Interactive terminal (`/jms <profile>`)
+
+The terminal is opened with its own login to the bastion, separate from the background session used by `/jms <command>`; it is never registered for reuse and is closed when you leave. The model has no tool for this: only you can start it, and your keystrokes are the confirmation, so nothing is asked and the command policy does not apply (it cannot, there is no command to classify). pi's audit log records that a shell was opened and how it ended (`jms_shell`); what you type is recorded by JumpServer itself.
+
+Handover works like pi's `interactive-shell` example: the TUI is stopped, stdin/stdout are wired to the remote channel, and the TUI is restarted afterwards. Terminal resizes are passed on. Anything a remote full-screen program leaves switched on (alternate screen, mouse reporting, hidden cursor) is reset when you return.
