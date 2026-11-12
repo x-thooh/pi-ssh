@@ -6,9 +6,11 @@ import { Type } from "typebox";
 import {
   deleteProfile,
   getActiveProfile,
+  getProfile,
   getProfiles,
   setActiveProfile,
 } from "../config.ts";
+import { guard, type GuardContext } from "../guard.ts";
 import { formatProfileStatus } from "../formatting/formatters.ts";
 
 export const SshProfileTool = {
@@ -25,10 +27,12 @@ export const SshProfileTool = {
     ),
   }),
 
-  execute(
+  async execute(
     _toolCallId: string,
     params: { action?: string; name?: string },
     _signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
     const action = (params.action || "list").toLowerCase();
 
@@ -62,6 +66,15 @@ export const SshProfileTool = {
     }
 
     if (action === "delete") {
+      if (getProfile(params.name)) {
+        await guard(ctx, {
+          tool: "ssh_profile",
+          profile: params.name,
+          target: `delete profile ${params.name}`,
+          verdict: "confirm",
+          message: `Delete SSH profile "${params.name}" (its stored credentials are lost).`,
+        });
+      }
       const removed = deleteProfile(params.name);
       const text = removed
         ? `Profile "${params.name}" deleted. Active profile is now ${getActiveProfile() ? `"${getActiveProfile()}"` : "unset"}.`

@@ -5,7 +5,12 @@
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { uploadFile, withConnection } from "../clients/ssh-client.ts";
+import fs from "node:fs";
+import { openSftp } from "../clients/ssh-client.ts";
+import { expandPath } from "../config.ts";
 import { formatTransfer } from "../formatting/formatters.ts";
+import { resolveProfile } from "../config.ts";
+import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
 
 export const SshUploadTool = {
   name: "ssh_upload",
@@ -21,7 +26,7 @@ export const SshUploadTool = {
       Type.String({ description: "SSH profile to use. Defaults to the active one." }),
     ),
     acceptNewHostKey: Type.Optional(
-      Type.Boolean({ description: "Record an unknown host key.", default: false }),
+      Type.Boolean({ description: "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.", default: false }),
     ),
   }),
 
@@ -34,16 +39,52 @@ export const SshUploadTool = {
       acceptNewHostKey?: boolean;
     },
     signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
-    const { name, profile, note } = await resolveForConnection(params.profile, {
-      acceptNewHostKey: params.acceptNewHostKey,
-      signal,
+    const resolved = resolveProfile(params.profile);
+    let size = "unknown";
+    try {
+      size = `${fs.statSync(expandPath(params.localPath)).size} bytes`;
+    } catch {
+      /* reported by the upload itself */
+    }
+    // Best effort and never prompts for trust: failure just means "unknown".
+    let remoteExists = "unknown";
+    try {
+      remoteExists = await withConnection(
+        resolved.profile,
+        { signal, acceptNewHostKey: false },
+        async (connection) => {
+          const sftp = await openSftp(connection);
+          return new Promise<string>((resolve) =>
+            sftp.stat(params.remotePath, (err) => resolve(err ? "no" : "YES (will be overwritten)")),
+          );
+        },
+      );
+    } catch {
+      /* unknown */
+    }
+    await guard(ctx, {
+      tool: "ssh_upload",
+      profile: resolved.name,
+      target: `${params.localPath} -> ${params.remotePath}`,
+      verdict: "confirm",
+      message: `Profile: ${resolved.name} (${resolved.profile.user}@${resolved.profile.host}:${resolved.profile.port})\nLocal: ${params.localPath}\nRemote: ${params.remotePath}\nSize: ${size}\nRemote already exists: ${remoteExists}`,
     });
 
-    const result = await withConnection(
-      profile,
-      { signal, acceptNewHostKey: params.acceptNewHostKey },
-      (connection) => uploadFile(connection, params.localPath, params.remotePath),
+    const { name, note, result } = await withHostKeyApproval(
+      ctx,
+      { name: resolved.name, ...resolved.profile },
+      async (accept) => {
+        const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+        const result = await withConnection(
+          c.profile,
+          { signal, acceptNewHostKey: accept },
+          (connection) => uploadFile(connection, params.localPath, params.remotePath),
+        );
+        return { ...c, result };
+      },
     );
 
     return {

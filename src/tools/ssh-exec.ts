@@ -6,6 +6,10 @@ import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { execCommand, withConnection } from "../clients/ssh-client.ts";
 import { formatExecResult } from "../formatting/formatters.ts";
+import { resolveProfile, getGlobalPolicy } from "../config.ts";
+import { classifyCommand, resolvePolicy } from "../policy.ts";
+import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
+import { audit } from "../audit.ts";
 
 export const SshExecTool = {
   name: "ssh_exec",
@@ -26,7 +30,7 @@ export const SshExecTool = {
     acceptNewHostKey: Type.Optional(
       Type.Boolean({
         description:
-          "Record the host key if this host is not yet known. Only pass this once the fingerprint has been checked.",
+          "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.",
         default: false,
       }),
     ),
@@ -42,25 +46,47 @@ export const SshExecTool = {
       acceptNewHostKey?: boolean;
     },
     signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
     if (!params.command?.trim()) throw new Error("command must not be empty.");
 
-    const { name, profile, note } = await resolveForConnection(params.profile, {
-      acceptNewHostKey: params.acceptNewHostKey,
-      signal,
+    const resolved = resolveProfile(params.profile);
+    const policy = resolvePolicy(getGlobalPolicy(), resolved.profile.policy);
+    const cls = classifyCommand(params.command, policy);
+    let verdict: "auto" | "confirm" | "deny" =
+      cls.verdict === "readonly" ? "auto" : cls.verdict;
+    if (policy.mode === "confirm-all" && verdict === "auto") verdict = "confirm";
+    if (policy.mode === "readonly" && verdict === "confirm") verdict = "deny";
+    const where = `${resolved.profile.user}@${resolved.profile.host}:${resolved.profile.port}`;
+    const { id } = await guard(ctx, {
+      tool: "ssh_exec",
+      profile: resolved.name,
+      target: params.command,
+      verdict,
+      message:
+        verdict === "deny"
+          ? `${cls.reason} (policy mode: ${policy.mode})`
+          : `Profile: ${resolved.name}\nHost: ${where}\nCwd: ${params.cwd ?? "(login directory)"}\nWhy: ${cls.reason}\nCommand:\n${params.command}`,
+      sessionKey: `${resolved.name}\0${params.cwd ?? ""}\0${params.command}`,
     });
     const timeoutMs = Math.min(Math.max(params.timeoutSeconds ?? 120, 1), 3600) * 1000;
 
-    const result = await withConnection(
-      profile,
-      { signal, acceptNewHostKey: params.acceptNewHostKey },
-      (connection) =>
-        execCommand(connection, params.command, {
-          cwd: params.cwd,
-          timeoutMs,
-          signal,
-        }),
+    const { name, profile, note, result } = await withHostKeyApproval(
+      ctx,
+      { name: resolved.name, ...resolved.profile },
+      async (accept) => {
+        const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+        const result = await withConnection(
+          c.profile,
+          { signal, acceptNewHostKey: accept },
+          (connection) =>
+            execCommand(connection, params.command, { cwd: params.cwd, timeoutMs, signal }),
+        );
+        return { ...c, result };
+      },
     );
+    audit({ id, profile: name, tool: "ssh_exec", exitCode: result.code });
 
     return {
       content: [{ type: "text" as const, text: withNote(formatExecResult(result), note) }],

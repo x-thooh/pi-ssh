@@ -6,6 +6,7 @@ import { Type } from "typebox";
 import { resolveProfile } from "../config.ts";
 import { authorizeKey } from "../authorize.ts";
 import { formatAuthorizeResult } from "../formatting/formatters.ts";
+import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
 
 export const SshAuthorizeTool = {
   name: "ssh_authorize",
@@ -40,7 +41,7 @@ export const SshAuthorizeTool = {
     ),
     acceptNewHostKey: Type.Optional(
       Type.Boolean({
-        description: "Record the host key if this host is not yet known.",
+        description: "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.",
         default: false,
       }),
     ),
@@ -57,19 +58,30 @@ export const SshAuthorizeTool = {
       acceptNewHostKey?: boolean;
     },
     signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
     const { name, profile } = resolveProfile(params.profile);
-
-    const result = await authorizeKey({
-      profileName: name,
-      profile,
-      keyPath: params.keyPath,
-      comment: params.comment,
-      authorizedKeysPath: params.authorizedKeysPath,
-      removePassword: params.removePassword,
-      acceptNewHostKey: params.acceptNewHostKey,
-      signal,
+    await guard(ctx, {
+      tool: "ssh_authorize",
+      profile: name,
+      target: `install key on ${profile.user}@${profile.host}${params.removePassword ? " and remove stored password" : ""}`,
+      verdict: "confirm",
+      message: `Install an SSH key in authorized_keys on ${profile.user}@${profile.host}:${profile.port} (profile ${name}).${params.removePassword ? "\nThe stored password will be removed from the profile." : ""}`,
     });
+
+    const result = await withHostKeyApproval(ctx, { name, ...profile }, (accept) =>
+      authorizeKey({
+        profileName: name,
+        profile,
+        keyPath: params.keyPath,
+        comment: params.comment,
+        authorizedKeysPath: params.authorizedKeysPath,
+        removePassword: params.removePassword,
+        acceptNewHostKey: accept,
+        signal,
+      }),
+    );
 
     const note =
       result.verified && params.removePassword

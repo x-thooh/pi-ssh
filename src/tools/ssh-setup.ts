@@ -7,6 +7,7 @@
 
 import { Type } from "typebox";
 import { expandPath, saveProfile } from "../config.ts";
+import { guard, type GuardContext } from "../guard.ts";
 import type { SetupParams, SshProfile } from "../types.ts";
 
 export const SshSetupTool = {
@@ -51,7 +52,13 @@ export const SshSetupTool = {
     ),
   }),
 
-  execute(_toolCallId: string, params: SetupParams, _signal: AbortSignal) {
+  async execute(
+    _toolCallId: string,
+    params: SetupParams,
+    _signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
+  ) {
     if (!params.host?.trim()) throw new Error("host must not be empty.");
     if (!params.user?.trim()) throw new Error("user must not be empty.");
 
@@ -77,6 +84,14 @@ export const SshSetupTool = {
       ...(params.autoKey === false ? { autoKey: false } : {}),
       ...(params.strictHostKey === false ? { strictHostKey: false } : {}),
     };
+
+    await guard(ctx, {
+      tool: "ssh_setup",
+      profile: params.name,
+      target: `save profile ${params.name}: ${profile.user}@${profile.host}:${profile.port}`,
+      verdict: "confirm",
+      message: `Save SSH profile "${params.name}": ${profile.user}@${profile.host}:${profile.port}\nAuth: ${profile.password ? "password" : "key"}${profile.strictHostKey === false ? "\nWARNING: host key checking disabled" : ""}`,
+    });
 
     saveProfile(params.name, profile);
 

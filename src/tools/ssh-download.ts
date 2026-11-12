@@ -5,7 +5,11 @@
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { downloadFile, withConnection } from "../clients/ssh-client.ts";
+import fs from "node:fs";
+import { expandPath } from "../config.ts";
 import { formatTransfer } from "../formatting/formatters.ts";
+import { resolveProfile } from "../config.ts";
+import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
 
 export const SshDownloadTool = {
   name: "ssh_download",
@@ -21,7 +25,7 @@ export const SshDownloadTool = {
       Type.String({ description: "SSH profile to use. Defaults to the active one." }),
     ),
     acceptNewHostKey: Type.Optional(
-      Type.Boolean({ description: "Record an unknown host key.", default: false }),
+      Type.Boolean({ description: "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.", default: false }),
     ),
   }),
 
@@ -34,16 +38,33 @@ export const SshDownloadTool = {
       acceptNewHostKey?: boolean;
     },
     signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
-    const { name, profile, note } = await resolveForConnection(params.profile, {
-      acceptNewHostKey: params.acceptNewHostKey,
-      signal,
-    });
+    const resolved = resolveProfile(params.profile);
+    // Only an overwrite changes anything on this machine worth asking about.
+    if (fs.existsSync(expandPath(params.localPath))) {
+      await guard(ctx, {
+        tool: "ssh_download",
+        profile: resolved.name,
+        target: `${params.remotePath} -> ${params.localPath}`,
+        verdict: "confirm",
+        message: `Profile: ${resolved.name}\nRemote: ${params.remotePath}\nLocal: ${params.localPath}\nThe local file already exists and will be OVERWRITTEN.`,
+      });
+    }
 
-    const result = await withConnection(
-      profile,
-      { signal, acceptNewHostKey: params.acceptNewHostKey },
-      (connection) => downloadFile(connection, params.remotePath, params.localPath),
+    const { name, note, result } = await withHostKeyApproval(
+      ctx,
+      { name: resolved.name, ...resolved.profile },
+      async (accept) => {
+        const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+        const result = await withConnection(
+          c.profile,
+          { signal, acceptNewHostKey: accept },
+          (connection) => downloadFile(connection, params.remotePath, params.localPath),
+        );
+        return { ...c, result };
+      },
     );
 
     return {

@@ -7,6 +7,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import { expandPath, getProfile, updateProfile } from "../config.ts";
+import { guard, type GuardContext } from "../guard.ts";
 import { defaultKeyComment, generateKeyPair } from "../keys.ts";
 
 export const SshKeygenTool = {
@@ -38,10 +39,12 @@ export const SshKeygenTool = {
     ),
   }),
 
-  execute(
+  async execute(
     _toolCallId: string,
     params: { path?: string; comment?: string; profile?: string; overwrite?: boolean },
     _signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
     const home = process.env.HOME || process.env.USERPROFILE || os.homedir();
     const privateKeyPath = expandPath(
@@ -57,6 +60,16 @@ export const SshKeygenTool = {
 
     if (params.profile && !getProfile(params.profile)) {
       throw new Error(`Profile "${params.profile}" does not exist.`);
+    }
+
+    if (params.overwrite) {
+      await guard(ctx, {
+        tool: "ssh_keygen",
+        profile: params.profile ?? "",
+        target: `overwrite key ${privateKeyPath}`,
+        verdict: "confirm",
+        message: `Overwrite the existing private key ${privateKeyPath}. Every host trusting the old key will stop accepting it.`,
+      });
     }
 
     const comment =

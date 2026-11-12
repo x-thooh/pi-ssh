@@ -9,6 +9,7 @@
 import { Type } from "typebox";
 import { getProfiles, resolveProfile, updateProfile } from "../config.ts";
 import { resolveForConnection, withNote } from "./shared.ts";
+import { guard, withHostKeyApproval, type GuardContext } from "../guard.ts";
 import {
   listTunnels,
   startTunnel,
@@ -99,7 +100,7 @@ export const SshTunnelTool = {
       Type.String({ description: "SSH profile to use. Defaults to the active one." }),
     ),
     acceptNewHostKey: Type.Optional(
-      Type.Boolean({ description: "Record an unknown host key.", default: false }),
+      Type.Boolean({ description: "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.", default: false }),
     ),
   }),
 
@@ -119,6 +120,8 @@ export const SshTunnelTool = {
       acceptNewHostKey?: boolean;
     },
     signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
     const action = (params.action ?? "list").toLowerCase();
     if (!ACTIONS.has(action)) {
@@ -212,34 +215,51 @@ export const SshTunnelTool = {
     }
 
     // start
-    const { name: profileName, profile, note } = await resolveForConnection(params.profile, {
-      acceptNewHostKey: params.acceptNewHostKey,
-      signal,
-    });
-
-    const stored = profile.tunnels?.[params.name];
+    const resolved = resolveProfile(params.profile);
+    const stored = resolved.profile.tunnels?.[params.name];
     const definition =
       params.destHost || params.destPort ? buildDefinition(params) : stored;
 
     if (!definition) {
-      const available = Object.keys(profile.tunnels ?? {});
+      const available = Object.keys(resolved.profile.tunnels ?? {});
       throw new TunnelError(
-        `No tunnel called "${params.name}" is defined for profile "${profileName}"${
+        `No tunnel called "${params.name}" is defined for profile "${resolved.name}"${
           available.length > 0 ? ` (available: ${available.join(", ")})` : ""
         }, and no destHost/destPort were given to build one.`,
       );
     }
     validateDefinition(definition);
 
-    const running = await startTunnel({
-      profileName,
-      profile,
-      name: params.name,
-      definition,
-      acceptNewHostKey: params.acceptNewHostKey,
-      durationSeconds: params.durationSeconds,
-      signal,
+    const bind = definition.bind ?? "127.0.0.1";
+    const loopback = ["127.0.0.1", "::1", "localhost"].includes(bind);
+    const spec = `${definition.kind} ${bind}:${definition.listenPort} -> ${definition.destHost}:${definition.destPort}`;
+    await guard(ctx, {
+      tool: "ssh_tunnel",
+      profile: resolved.name,
+      target: spec,
+      verdict: "confirm",
+      message: `Profile: ${resolved.name}\nKind: ${definition.kind}\nBind: ${bind}\nListen port: ${definition.listenPort}\nDestination: ${definition.destHost}:${definition.destPort}${
+        loopback ? "" : `\n\n!!! WARNING: bind ${bind} is not loopback: this exposes the forwarded service to the network !!!`
+      }`,
     });
+
+    const { profileName, profile, note, running } = await withHostKeyApproval(
+      ctx,
+      { name: resolved.name, ...resolved.profile },
+      async (accept) => {
+        const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+        const running = await startTunnel({
+          profileName: c.name,
+          profile: c.profile,
+          name: params.name as string,
+          definition,
+          acceptNewHostKey: accept,
+          durationSeconds: params.durationSeconds,
+          signal,
+        });
+        return { profileName: c.name, profile: c.profile, note: c.note, running };
+      },
+    );
 
     return {
       content: [

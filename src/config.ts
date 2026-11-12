@@ -12,6 +12,7 @@ import * as fs from "node:fs";
 import * as os from "node:os";
 import * as path from "node:path";
 import type { SshProfile } from "./types.ts";
+import type { PolicyConfig } from "./policy.ts";
 import { SshNotConfiguredError } from "./types.ts";
 
 /**
@@ -197,6 +198,13 @@ export function loadConfig(): void {
       /* an unchangeable mode is reported by ssh_doctor, not fatal here */
     }
   }
+}
+
+/** The top-level `policy` key of the config file (kept in `extra`). */
+export function getGlobalPolicy(): PolicyConfig | undefined {
+  ensureFresh();
+  const p = cache.extra.policy;
+  return p && typeof p === "object" ? (p as PolicyConfig) : undefined;
 }
 
 export function getConfig(): SshProfile | null {

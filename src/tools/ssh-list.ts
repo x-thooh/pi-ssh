@@ -6,6 +6,8 @@ import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
 import { listDirectory, withConnection } from "../clients/ssh-client.ts";
 import { formatDirectory } from "../formatting/formatters.ts";
+import { resolveProfile } from "../config.ts";
+import { withHostKeyApproval, type GuardContext } from "../guard.ts";
 
 export const SshListTool = {
   name: "ssh_list",
@@ -18,7 +20,7 @@ export const SshListTool = {
       Type.String({ description: "SSH profile to use. Defaults to the active one." }),
     ),
     acceptNewHostKey: Type.Optional(
-      Type.Boolean({ description: "Record an unknown host key.", default: false }),
+      Type.Boolean({ description: "Deprecated and ignored: unknown host keys are only recorded after the human approves a prompt.", default: false }),
     ),
   }),
 
@@ -26,17 +28,24 @@ export const SshListTool = {
     _toolCallId: string,
     params: { path: string; profile?: string; acceptNewHostKey?: boolean },
     signal: AbortSignal,
+    _onUpdate?: unknown,
+    ctx?: GuardContext,
   ) {
-    const { name, profile, note } = await resolveForConnection(params.profile, {
-      acceptNewHostKey: params.acceptNewHostKey,
-      signal,
-    });
+    const resolved = resolveProfile(params.profile);
     const remotePath = params.path?.trim() || ".";
 
-    const entries = await withConnection(
-      profile,
-      { signal, acceptNewHostKey: params.acceptNewHostKey },
-      (connection) => listDirectory(connection, remotePath),
+    const { name, note, entries } = await withHostKeyApproval(
+      ctx,
+      { name: resolved.name, ...resolved.profile },
+      async (accept) => {
+        const c = await resolveForConnection(params.profile, { acceptNewHostKey: accept, signal });
+        const entries = await withConnection(
+          c.profile,
+          { signal, acceptNewHostKey: accept },
+          (connection) => listDirectory(connection, remotePath),
+        );
+        return { ...c, entries };
+      },
     );
 
     return {

@@ -5,6 +5,8 @@
  * No behavior, no classes, no inheritance -- just data (errors excepted).
  */
 
+import type { PolicyConfig } from "./policy.ts";
+
 // Configuration
 
 export interface SshProfile {
@@ -32,6 +34,8 @@ export interface SshProfile {
   readonly autoKey?: boolean;
   /** Named port forwards that ssh_tunnel can start by name. */
   readonly tunnels?: Record<string, TunnelDefinition>;
+  /** Confirmation policy for this profile; overrides the global one. */
+  readonly policy?: PolicyConfig;
 }
 
 /** A tunnel that is currently running. */
