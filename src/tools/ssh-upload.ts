@@ -4,7 +4,8 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { uploadFile, withConnection } from "../clients/ssh-client.ts";
+import { uploadFile, } from "../clients/ssh-client.ts";
+import { withProfileConnection } from "../clients/run.ts";
 import { formatTransfer } from "../formatting/formatters.ts";
 
 export const SshUploadTool = {
@@ -40,7 +41,8 @@ export const SshUploadTool = {
       signal,
     });
 
-    const result = await withConnection(
+    const result = await withProfileConnection(
+      name,
       profile,
       { signal, acceptNewHostKey: params.acceptNewHostKey },
       (connection) => uploadFile(connection, params.localPath, params.remotePath),

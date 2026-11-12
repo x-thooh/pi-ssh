@@ -4,7 +4,7 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { execCommand, withConnection } from "../clients/ssh-client.ts";
+import { runCommandOnProfile } from "../clients/run.ts";
 import { formatExecResult } from "../formatting/formatters.ts";
 
 export const SshExecTool = {
@@ -51,16 +51,12 @@ export const SshExecTool = {
     });
     const timeoutMs = Math.min(Math.max(params.timeoutSeconds ?? 120, 1), 3600) * 1000;
 
-    const result = await withConnection(
-      profile,
-      { signal, acceptNewHostKey: params.acceptNewHostKey },
-      (connection) =>
-        execCommand(connection, params.command, {
-          cwd: params.cwd,
-          timeoutMs,
-          signal,
-        }),
-    );
+    const result = await runCommandOnProfile(name, profile, params.command, {
+      cwd: params.cwd,
+      timeoutMs,
+      signal,
+      acceptNewHostKey: params.acceptNewHostKey,
+    });
 
     return {
       content: [{ type: "text" as const, text: withNote(formatExecResult(result), note) }],

@@ -4,7 +4,8 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { downloadFile, withConnection } from "../clients/ssh-client.ts";
+import { downloadFile, } from "../clients/ssh-client.ts";
+import { withProfileConnection } from "../clients/run.ts";
 import { formatTransfer } from "../formatting/formatters.ts";
 
 export const SshDownloadTool = {
@@ -40,7 +41,8 @@ export const SshDownloadTool = {
       signal,
     });
 
-    const result = await withConnection(
+    const result = await withProfileConnection(
+      name,
       profile,
       { signal, acceptNewHostKey: params.acceptNewHostKey },
       (connection) => downloadFile(connection, params.remotePath, params.localPath),

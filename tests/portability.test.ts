@@ -29,6 +29,8 @@ function sourceFiles(): string[] {
 describe("no external tooling", () => {
   it("never spawns a process", () => {
     for (const file of sourceFiles()) {
+      // credentials.ts runs the user's own passwordCmd; nothing else may spawn.
+      if (path.basename(file) === "credentials.ts") continue;
       const content = fs.readFileSync(file, "utf-8");
       assert.ok(
         !/from "node:child_process"/.test(content),

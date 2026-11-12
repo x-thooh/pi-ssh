@@ -38,6 +38,7 @@ import {
   describeChangedKey,
 } from "../known-hosts.ts";
 import { expandPath } from "../config.ts";
+import { resolvePassword } from "../credentials.ts";
 
 const DEFAULT_CONNECT_TIMEOUT_MS = 20_000;
 /**
@@ -53,7 +54,7 @@ const KEEPALIVE_INTERVAL_MS = 15_000;
 const KEEPALIVE_COUNT_MAX = 4;
 const DEFAULT_EXEC_TIMEOUT_MS = 120_000;
 /** Enough to be useful, small enough not to swamp a context window. */
-const MAX_OUTPUT_CHARS = 200_000;
+export const MAX_OUTPUT_CHARS = 200_000;
 
 export interface ConnectOptions {
   /** Record an unknown host key instead of refusing. Trust on first use. */
@@ -61,6 +62,8 @@ export interface ConnectOptions {
   /** Restrict authentication to one method, e.g. to force a password login. */
   readonly only?: "password" | "key";
   readonly signal?: AbortSignal;
+  /** An already-open stream to use instead of dialing (jump hosts). */
+  readonly sock?: NodeJS.ReadableStream;
 }
 
 export interface Connection {
@@ -124,9 +127,20 @@ export function buildAuthMethods(
  * in a closure and turned into a proper error afterwards -- ssh2 itself only
  * reports a generic handshake failure.
  */
-export function connect(
+export async function connect(
   profile: SshProfile,
   options: ConnectOptions = {},
+): Promise<Connection> {
+  // Resolved only now and only held in this call; never written anywhere.
+  const password = await resolvePassword(profile);
+  const effective: SshProfile = password ? { ...profile, password } : profile;
+  const connection = await connectResolved(effective, options);
+  return { ...connection, profile };
+}
+
+function connectResolved(
+  profile: SshProfile,
+  options: ConnectOptions,
 ): Promise<Connection> {
   const knownHostsFile = profile.knownHostsFile
     ? expandPath(profile.knownHostsFile)
@@ -156,6 +170,7 @@ export function connect(
       readyTimeout: profile.connectTimeoutMs ?? DEFAULT_CONNECT_TIMEOUT_MS,
       keepaliveInterval: KEEPALIVE_INTERVAL_MS,
       keepaliveCountMax: KEEPALIVE_COUNT_MAX,
+      ...(options.sock ? { sock: options.sock as never } : {}),
 
       hostVerifier: (key: Buffer, verify: (ok: boolean) => void) => {
         const check = checkHostKey(profile.host, profile.port, key, knownHostsFile);

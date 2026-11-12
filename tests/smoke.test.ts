@@ -177,6 +177,8 @@ describe("Portability", () => {
     ];
 
     for (const file of sources) {
+      // credentials.ts runs the user's own passwordCmd; nothing else may spawn.
+      if (path.basename(file) === "credentials.ts") continue;
       const content = fs.readFileSync(file, "utf-8");
       assert.ok(
         !/from "node:child_process"/.test(content),

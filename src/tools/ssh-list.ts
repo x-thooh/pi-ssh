@@ -4,7 +4,8 @@
 
 import { Type } from "typebox";
 import { resolveForConnection, withNote } from "./shared.ts";
-import { listDirectory, withConnection } from "../clients/ssh-client.ts";
+import { listDirectory, } from "../clients/ssh-client.ts";
+import { withProfileConnection } from "../clients/run.ts";
 import { formatDirectory } from "../formatting/formatters.ts";
 
 export const SshListTool = {
@@ -33,7 +34,8 @@ export const SshListTool = {
     });
     const remotePath = params.path?.trim() || ".";
 
-    const entries = await withConnection(
+    const entries = await withProfileConnection(
+      name,
       profile,
       { signal, acceptNewHostKey: params.acceptNewHostKey },
       (connection) => listDirectory(connection, remotePath),
