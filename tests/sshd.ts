@@ -91,7 +91,7 @@ export async function startTestServer(): Promise<TestServer | null> {
   const sftp = findSftpServer();
   if (!sshd) return null;
 
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), "pi-ssh-sshd-"));
+  const dir = fs.realpathSync(fs.mkdtempSync(path.join(os.tmpdir(), "pi-ssh-sshd-")));
   const home = path.join(dir, "home");
   const sshDir = path.join(home, ".ssh");
   fs.mkdirSync(sshDir, { recursive: true, mode: 0o700 });
